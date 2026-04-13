@@ -5,7 +5,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 
-from app.api import health, ingest, query, status
+from app.api import health, ingest, prompts, query, query_stream, status
 from app.config import get_settings
 from app.utils.logger import configure_logging, get_logger
 
@@ -27,8 +27,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="RAGfier Ingestion API",
-        description="Multi-tenant RAG ingestion pipeline (Phase 1).",
+        title="RAGfier API",
+        description="Multi-tenant RAG system: hybrid retrieval, reranking, and citation-enforced generation.",
         version=settings.app_version,
         lifespan=lifespan,
     )
@@ -36,6 +36,8 @@ def create_app() -> FastAPI:
     app.include_router(ingest.router)
     app.include_router(status.router)
     app.include_router(query.router)
+    app.include_router(query_stream.router)
+    app.include_router(prompts.router)
     return app
 
 

@@ -1,662 +1,608 @@
-# SPEC.md — Phase 1: Technical Foundation for Domain-Specific RAG Ingestion
+# SPEC.md — Phase 2: Hybrid Retrieval, Reranking, and Citation-Enforced Generation
 
 ---
 
 ## 1. Executive Summary
 
-Phase 1 establishes the ingestion backbone of a production-grade, multi-tenant RAG system. The objective is to convert unstructured domain documents (PDFs, Markdown) into structured, searchable, and citation-aware vector representations stored in Supabase pgvector.
+Phase 2 graduates the RAG system from a basic vector-similarity retrieval prototype into a production-quality query pipeline. The objective is to dramatically improve retrieval precision and introduce grounded, citation-enforced LLM response generation.
 
-This phase is the foundation upon which all subsequent phases (hybrid retrieval, reranking, evaluation, SDK delivery) will be built. Every architectural decision made here — from parser selection to metadata schema — is optimized for eventual multi-tenant SaaS deployment.
+Phase 1 established the ingestion backbone: documents are parsed, chunked, embedded, and stored in Supabase pgvector with full spatial metadata. Phase 2 now builds the **query-time intelligence** — the logic that turns a user's natural language question into a precise, cited, and hallucination-resistant answer.
 
-### Phase 1 Scope
+### Phase 2 Scope
 
-- Layout-aware document parsing with spatial metadata extraction
-- Semantically meaningful chunking with context retention
-- High-quality embedding generation
-- Multi-tenant vector storage with Row-Level Security (RLS)
-- Basic retrieval API for validation
-- Citation-ready metadata pipeline
+- Hybrid retrieval combining dense (vector) and sparse (BM25) search
+- Reciprocal Rank Fusion (RRF) to merge ranked result sets
+- Cross-encoder reranking for precision refinement
+- Citation-enforced LLM response generation
+- Hallucination guardrails (explicit decline when context is insufficient)
+- Versioned prompt management
+- Extended `/query` endpoint with generation and citations
 
 ### Out of Scope (Deferred to Later Phases)
 
-- Hybrid search (BM25 + vector) → Phase 2
-- Cross-encoder reranking → Phase 2
-- Citation enforcement in LLM output → Phase 2
-- Automated evaluation pipeline (Ragas) → Phase 3
+- Automated evaluation pipeline (Ragas, golden dataset) → Phase 3
+- CI-gated quality thresholds → Phase 3
 - AI SDK / Chat widget / Frontend delivery → Phase 4
+- PDF viewer with bounding box overlays → Phase 4
+- Multi-deployment architecture (API, widget, iframe) → Phase 4
 
 ---
 
 ## 2. Architectural Goals
 
-1. **Preserve Document Structure**: Maintain headers, tables, sections, and hierarchical relationships during parsing.
-2. **Enforce Fine-Grained Citations**: Capture page numbers and bounding box coordinates at parse time so every chunk is traceable to its source location.
-3. **Enable Multi-Tenant Isolation**: Use Supabase RLS with `tenant_id` / `organization_id` to ensure data isolation from day one.
-4. **Ensure SaaS Scalability**: Design the schema and pipeline to support hundreds of tenants and thousands of documents without architectural changes.
-5. **Maintain High Retrieval Precision**: Optimize chunking strategy and embedding quality to maximize signal-to-noise ratio during retrieval.
-6. **Build for Extensibility**: Structure the pipeline so hybrid search, reranking, and evaluation can be layered on without refactoring core components.
+1. **Maximize Retrieval Precision**: Combine semantic understanding (vector search) with keyword exactness (BM25) so the system handles both conceptual queries and exact-match lookups (e.g., drug codes, clause numbers, part IDs).
+2. **Minimize Irrelevant Context in LLM Prompt**: Use cross-encoder reranking to filter out noise before generation, reducing hallucination risk and improving response quality.
+3. **Enforce Grounded Citations**: Every claim in the generated response must map back to a specific chunk, page number, and source document. No unsupported claims.
+4. **Fail Gracefully on Missing Context**: If the retrieved chunks do not contain the answer, the system explicitly declines rather than hallucinating.
+5. **Maintain Multi-Tenant Isolation**: All retrieval and generation operations remain scoped by `tenant_id` via RLS.
+6. **Keep Prompt Logic Auditable**: Store generation prompts as versioned configuration, not hardcoded strings.
 
 ---
 
-## 3. Tech Stack
+## 3. Prerequisites from Phase 1
 
-### 3.1 Core Backend
+Phase 2 assumes the following Phase 1 deliverables are operational:
 
-| Component        | Technology              | Rationale                                                                 |
-|------------------|-------------------------|---------------------------------------------------------------------------|
-| Language         | Python 3.10+            | Ecosystem support for ML/AI libraries                                     |
-| API Framework    | FastAPI                 | Async-native, automatic OpenAPI docs, high performance                    |
-| Orchestration    | LangChain / LangGraph   | Pipeline orchestration, chain composition, future agent support           |
-
-### 3.2 Parsing Layer
-
-| Component        | Technology              | Rationale                                                                 |
-|------------------|-------------------------|---------------------------------------------------------------------------|
-| PDF Parser       | LlamaParse              | Layout-aware extraction; identifies headers, tables, multi-column layouts |
-| Markdown Parser  | LlamaParse / Python-Markdown | Fallback for non-PDF sources                                        |
-
-### 3.3 Embedding Layer
-
-| Component        | Technology                        | Rationale                                                        |
-|------------------|-----------------------------------|------------------------------------------------------------------|
-| Embedding Model  | OpenAI `text-embedding-3-small`   | 1536 dimensions, cost-effective, strong semantic representation  |
-| Dimensionality   | 1536                              | Good balance of precision vs. storage/compute cost               |
-
-### 3.4 Storage Layer
-
-| Component          | Technology                     | Rationale                                                          |
-|--------------------|--------------------------------|--------------------------------------------------------------------|
-| Vector Database    | Supabase PostgreSQL + pgvector | Integrated relational + vector storage; native RLS for multi-tenancy |
-| Document Storage   | Supabase Storage               | Raw file hosting with signed URLs for processing                   |
-| Auth & Security    | Supabase Auth + JWT            | Built-in JWT-based auth with `app_metadata` for tenant routing     |
-
-### 3.5 Infrastructure & Tooling
-
-| Component          | Technology              | Rationale                                                          |
-|--------------------|-------------------------|--------------------------------------------------------------------|
-| Background Jobs    | Celery (optional)       | Async batch ingestion for large document sets                      |
-| Queue / Cache      | Redis (optional)        | Job queue for Celery; caching for repeated queries                 |
-| Containerization   | Docker                  | Reproducible environments; future self-hosted deployment           |
-| Environment Config | python-dotenv / Pydantic Settings | Secure management of API keys and config                  |
-
-### 3.6 Development Dependencies
-
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-supabase>=2.0.0
-llama-parse>=0.4.0
-langchain>=0.1.0
-langchain-openai>=0.0.5
-openai>=1.12.0
-python-dotenv>=1.0.0
-pydantic>=2.5.0
-httpx>=0.25.0
-python-multipart>=0.0.6
+| Component                        | Status   | Notes                                                        |
+|----------------------------------|----------|--------------------------------------------------------------|
+| Ingestion pipeline               | Complete | PDF → parse → chunk → embed → Supabase upsert               |
+| `documents` table with pgvector  | Complete | HNSW index on `embedding`, RLS active                        |
+| `ingestion_jobs` table           | Complete | Status tracking with tenant isolation                        |
+| `tenants` table                  | Complete | Multi-tenant registry                                        |
+| `match_documents()` function     | Complete | Basic cosine similarity retrieval (will be extended)         |
+| `/ingest` endpoint               | Complete | File upload + async pipeline trigger                         |
+| `/status/{job_id}` endpoint      | Complete | Job progress polling                                         |
+| `/query` endpoint                | Complete | Basic vector search (will be replaced by hybrid pipeline)    |
+| Metadata schema                  | Complete | page_number, bounding_boxes, section_heading, source, etc.   |
 
 ---
 
-## 4. System Architecture
+## 4. Tech Stack Additions (Phase 2)
 
-### 4.1 High-Level Pipeline Flow
+### 4.1 Retrieval Layer
 
-┌──────────────┐
-│  User Upload │
-│  (PDF / MD)  │
-└──────┬───────┘
-│
-▼
+| Component          | Technology                          | Rationale                                                      |
+|--------------------|-------------------------------------|----------------------------------------------------------------|
+| Sparse Search      | PostgreSQL `tsvector` + `ts_rank`   | Native full-text search in Supabase; no external dependency    |
+| Rank Fusion        | Custom RRF implementation           | Merges dense + sparse ranked lists into unified candidate set  |
+
+### 4.2 Reranking Layer
+
+| Component          | Technology                                      | Rationale                                                    |
+|--------------------|-------------------------------------------------|--------------------------------------------------------------|
+| Cross-Encoder      | Cohere Rerank API (`rerank-english-v3.0`)       | High accuracy; managed API avoids GPU provisioning           |
+| Fallback           | `cross-encoder/ms-marco-MiniLM-L-6-v2` (local) | Open-source fallback for self-hosted or cost-sensitive deployments |
+
+### 4.3 Generation Layer
+
+| Component          | Technology                     | Rationale                                                    |
+|--------------------|--------------------------------|--------------------------------------------------------------|
+| LLM                | OpenAI `gpt-4o` / `gpt-4o-mini` | Strong instruction-following for citation enforcement       |
+| Prompt Management  | YAML config files              | Versioned, auditable, no-redeploy prompt updates             |
+| Streaming          | Server-Sent Events (SSE)       | Token-by-token delivery for responsive UX                    |
+
+### 4.4 New Dependencies
+
+```
+cohere>=5.0.0              # Rerank API
+sentence-transformers>=2.2.0  # Local cross-encoder fallback
+pyyaml>=6.0                # Prompt template management
+tiktoken>=0.5.0            # Token counting for context window management
+sse-starlette>=1.6.0       # SSE streaming for FastAPI
+```
+---
+
+## 5. System Architecture (Phase 2 Query Pipeline)
+
+### 5.1 High-Level Query Flow
+
+```
 ┌──────────────────┐
-│ Supabase Storage  │  ← Raw file stored; signed URL generated
-│ (Raw Documents)   │
+│   User Query      │
+│   (natural lang)  │
 └──────┬───────────┘
 │
 ▼
 ┌──────────────────┐
-│   LlamaParse      │  ← Layout-aware extraction
-│ (Parsing Engine)  │     Outputs: text, headers, tables, bbox metadata
+│  Query Embedding  │  ← OpenAI text-embedding-3-small
+│                   │     (same model as ingestion)
+└──────┬───────────┘
+│
+▼
+┌──────────────────────────────────────────┐
+│         Parallel Retrieval               │
+│                                          │
+│  ┌─────────────┐    ┌─────────────────┐  │
+│  │ Dense Search │    │ Sparse Search   │  │
+│  │ (pgvector    │    │ (tsvector +     │  │
+│  │  cosine sim) │    │  ts_rank/BM25)  │  │
+│  └──────┬──────┘    └──────┬──────────┘  │
+│         │                  │             │
+│         └──────┬───────────┘             │
+│                ▼                         │
+│  ┌─────────────────────────┐             │
+│  │  Reciprocal Rank Fusion │             │
+│  │  (RRF Merge)            │             │
+│  └──────────┬──────────────┘             │
+└─────────────┼────────────────────────────┘
+│
+▼
+┌──────────────────┐
+│  Cross-Encoder   │  ← Cohere Rerank or local cross-encoder
+│  Reranking       │     Rescores top-N candidates → top-K
 └──────┬───────────┘
 │
 ▼
 ┌──────────────────┐
-│  Chunking Engine  │  ← Recursive character splitting
-│                   │     600-800 tokens, 100 token overlap
-│                   │     Context injection (title, section heading)
+│  Context Assembly │  ← Build citation-aware prompt
+│  + Prompt Build   │     Inject top-K chunks with [source_id] tags
 └──────┬───────────┘
 │
 ▼
 ┌──────────────────┐
-│ Embedding Engine  │  ← OpenAI text-embedding-3-small
-│ (Batch Processing)│     1536-dimensional vectors
+│  LLM Generation  │  ← GPT-4o with citation enforcement prompt
+│  (with citations)│     Streaming via SSE
 └──────┬───────────┘
 │
 ▼
 ┌──────────────────┐
-│  Supabase pgvector│  ← Multi-tenant upsert with RLS
-│  (Vector DB)      │     HNSW indexed for cosine similarity
+│  Response with   │  ← Each claim tagged with chunk ID
+│  Citation Anchors│     Metadata (page, bbox, source) included
 └──────────────────┘
+```
+### 5.2 Retrieval Parameter Summary
 
-### 4.2 Component Interaction Diagram
-
-┌─────────────────────────────────────────────────────────┐
-│                      FastAPI Server                      │
-│                                                         │
-│  ┌─────────┐   ┌──────────┐   ┌──────────┐            │
-│  │ /ingest  │   │ /status  │   │  /query  │            │
-│  └────┬────┘   └────┬─────┘   └────┬─────┘            │
-│       │              │              │                   │
-│       ▼              ▼              ▼                   │
-│  ┌─────────────────────────────────────────┐           │
-│  │        Pipeline Orchestrator             │           │
-│  │        (LangChain / LangGraph)           │           │
-│  └─────────────────────────────────────────┘           │
-│       │              │              │                   │
-│       ▼              ▼              ▼                   │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐            │
-│  │ Parser   │  │ Chunker  │  │ Embedder  │            │
-│  │ Module   │  │ Module   │  │ Module    │            │
-│  └──────────┘  └──────────┘  └───────────┘            │
-└─────────────────────┬───────────────────────────────────┘
-│
-▼
-┌────────────────────────┐
-│       Supabase         │
-│  ┌──────────────────┐  │
-│  │  Storage (Files) │  │
-│  ├──────────────────┤  │
-│  │  PostgreSQL +    │  │
-│  │  pgvector (Data) │  │
-│  ├──────────────────┤  │
-│  │  Auth (JWT/RLS)  │  │
-│  └──────────────────┘  │
-└────────────────────────┘
+| Parameter                  | Value     | Rationale                                                          |
+|----------------------------|-----------|---------------------------------------------------------------------|
+| Dense retrieval top-N      | 20        | Cast wide net for semantic matches                                  |
+| Sparse retrieval top-N     | 20        | Cast wide net for keyword matches                                   |
+| RRF constant `k`           | 60        | Standard value; prevents top-rank dominance                         |
+| Post-RRF candidate pool    | ~20-30    | Deduplicated union of dense + sparse results                        |
+| Reranker input             | Top 20    | Cross-encoder processes the top 20 RRF candidates                   |
+| Final top-K to LLM         | 5         | Balances context richness vs. noise; configurable per tenant        |
 
 ---
 
-## 5. Database Schema
+## 6. Database Schema Extensions
 
-### 5.1 Core Schema (PostgreSQL + pgvector)
+### 6.1 Full-Text Search Column
+
+Add a `tsvector` column to the existing `documents` table and a GIN index for BM25-style sparse retrieval:
 
 ```sql
 -- =============================================================
--- Phase 1: Domain-Specific RAG Ingestion — Database Schema
+-- Phase 2: Add full-text search support to documents table
 -- =============================================================
 
--- Enable the pgvector extension for vector similarity search
-CREATE EXTENSION IF NOT EXISTS vector;
+-- Add tsvector column for sparse retrieval
+ALTER TABLE documents
+  ADD COLUMN fts tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
 
+-- GIN index for fast full-text search
+CREATE INDEX idx_documents_fts
+  ON documents
+  USING gin (fts);
+```
+
+### 6.2 Prompt Versions Table
+
+```sql
 -- =============================================================
--- Table: tenants
--- Purpose: Registry of all tenants (organizations) in the system
+-- Table: prompt_versions
+-- Purpose: Versioned storage of generation prompts for auditability
 -- =============================================================
-CREATE TABLE tenants (
+CREATE TABLE prompt_versions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL,
-  slug TEXT UNIQUE NOT NULL,          -- URL-friendly identifier
-  plan TEXT DEFAULT 'free',            -- Subscription tier
-  settings JSONB DEFAULT '{}',         -- Tenant-specific config
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- =============================================================
--- Table: ingestion_jobs
--- Purpose: Track the status and progress of each document ingestion
--- =============================================================
-CREATE TABLE ingestion_jobs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  file_name TEXT NOT NULL,
-  file_path TEXT NOT NULL,             -- Path in Supabase Storage
-  status TEXT NOT NULL DEFAULT 'pending',
-    -- Valid statuses: pending | parsing | chunking | embedding | completed | failed
-  total_chunks INTEGER DEFAULT 0,
-  processed_chunks INTEGER DEFAULT 0,
-  error_message TEXT,
-  metadata JSONB DEFAULT '{}',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- =============================================================
--- Table: documents
--- Purpose: Store parsed, chunked, and embedded document fragments
--- =============================================================
-CREATE TABLE documents (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  job_id UUID REFERENCES ingestion_jobs(id) ON DELETE SET NULL,
-  content TEXT NOT NULL,               -- The chunk text
-  embedding VECTOR(1536),             -- OpenAI text-embedding-3-small output
-  metadata JSONB NOT NULL DEFAULT '{}',
-    -- Expected metadata structure:
-    -- {
-    --   "source": "contract.pdf",
-    --   "document_id": "uuid-of-parent-file",
-    --   "page_number": 5,
-    --   "bounding_boxes": [[x0, y0, x1, y1], ...],
-    --   "section_heading": "Section 3.2 — Liability",
-    --   "document_title": "Master Services Agreement",
-    --   "chunk_index": 12,
-    --   "total_chunks": 45,
-    --   "parser": "llamaparse",
-    --   "chunk_strategy": "recursive_character",
-    --   "chunk_size_tokens": 700,
-    --   "overlap_tokens": 100
-    -- }
+  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,                    -- e.g., "rag_generation_v1"
+  version INTEGER NOT NULL DEFAULT 1,
+  system_prompt TEXT NOT NULL,
+  user_prompt_template TEXT NOT NULL,    -- Contains {context} and {query} placeholders
+  metadata JSONB DEFAULT '{}',          -- Model params, temperature, etc.
+  is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- =============================================================
--- Indexes
--- =============================================================
+-- Unique constraint: one active prompt per name per tenant
+CREATE UNIQUE INDEX idx_prompt_active
+  ON prompt_versions (tenant_id, name)
+  WHERE is_active = true;
 
--- HNSW index for fast approximate nearest neighbor search
-CREATE INDEX idx_documents_embedding
-  ON documents
-  USING hnsw (embedding vector_cosine_ops);
+-- RLS
+ALTER TABLE prompt_versions ENABLE ROW LEVEL SECURITY;
 
--- B-tree index for tenant-scoped queries
-CREATE INDEX idx_documents_tenant_id
-  ON documents (tenant_id);
-
--- B-tree index for job-based lookups
-CREATE INDEX idx_documents_job_id
-  ON documents (job_id);
-
--- GIN index for JSONB metadata queries (e.g., filter by source file)
-CREATE INDEX idx_documents_metadata
-  ON documents
-  USING gin (metadata);
-
--- B-tree index for ingestion job status tracking
-CREATE INDEX idx_ingestion_jobs_tenant_status
-  ON ingestion_jobs (tenant_id, status);
-
--- =============================================================
--- Row-Level Security (RLS)
--- =============================================================
-
-ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ingestion_jobs ENABLE ROW LEVEL SECURITY;
-
--- Policy: Authenticated users can only SELECT documents belonging to their org
-CREATE POLICY "tenant_isolation_select" ON documents
+CREATE POLICY "tenant_isolation_prompts" ON prompt_versions
   FOR SELECT
   USING (
-    tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
+    tenant_id IS NULL  -- Global prompts accessible to all
+    OR tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
   );
+```
 
--- Policy: Service role can INSERT documents (used by ingestion pipeline)
-CREATE POLICY "service_role_insert" ON documents
-  FOR INSERT
-  WITH CHECK (true);
-  -- Note: Ingestion runs with service_role key; RLS is bypassed.
-  -- This policy exists for documentation clarity.
+### 6.3 New Function: `match_documents_hybrid`
 
--- Policy: Authenticated users can only view their own ingestion jobs
-CREATE POLICY "tenant_isolation_jobs" ON ingestion_jobs
-  FOR SELECT
-  USING (
-    tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
-  );
-
+```sql
 -- =============================================================
--- Functions
+-- Function: match_documents_hybrid
+-- Purpose: Parallel dense + sparse retrieval with RRF fusion
 -- =============================================================
-
--- Function: match_documents
--- Purpose: Retrieve the top-k most similar document chunks for a query
-CREATE OR REPLACE FUNCTION match_documents(
+CREATE OR REPLACE FUNCTION match_documents_hybrid(
   query_embedding VECTOR(1536),
+  query_text TEXT,
   match_count INT DEFAULT 5,
+  rrf_k INT DEFAULT 60,
+  dense_top_n INT DEFAULT 20,
+  sparse_top_n INT DEFAULT 20,
   filter_tenant_id UUID DEFAULT NULL
 )
 RETURNS TABLE (
   id UUID,
   content TEXT,
   metadata JSONB,
-  similarity FLOAT
+  rrf_score FLOAT,
+  dense_rank INT,
+  sparse_rank INT
 )
 LANGUAGE plpgsql
 AS $$
 BEGIN
   RETURN QUERY
+  WITH dense AS (
+    SELECT
+      d.id,
+      d.content,
+      d.metadata,
+      ROW_NUMBER() OVER (ORDER BY d.embedding <=> query_embedding) AS rank
+    FROM documents d
+    WHERE (filter_tenant_id IS NULL OR d.tenant_id = filter_tenant_id)
+    ORDER BY d.embedding <=> query_embedding
+    LIMIT dense_top_n
+  ),
+  sparse AS (
+    SELECT
+      d.id,
+      d.content,
+      d.metadata,
+      ROW_NUMBER() OVER (ORDER BY ts_rank(d.fts, websearch_to_tsquery('english', query_text)) DESC) AS rank
+    FROM documents d
+    WHERE
+      (filter_tenant_id IS NULL OR d.tenant_id = filter_tenant_id)
+      AND d.fts @@ websearch_to_tsquery('english', query_text)
+    ORDER BY ts_rank(d.fts, websearch_to_tsquery('english', query_text)) DESC
+    LIMIT sparse_top_n
+  ),
+  fused AS (
+    SELECT
+      COALESCE(dense.id, sparse.id) AS id,
+      COALESCE(dense.content, sparse.content) AS content,
+      COALESCE(dense.metadata, sparse.metadata) AS metadata,
+      COALESCE(1.0 / (rrf_k + dense.rank), 0) + COALESCE(1.0 / (rrf_k + sparse.rank), 0) AS rrf_score,
+      dense.rank AS dense_rank,
+      sparse.rank AS sparse_rank
+    FROM dense
+    FULL OUTER JOIN sparse ON dense.id = sparse.id
+  )
   SELECT
-    d.id,
-    d.content,
-    d.metadata,
-    1 - (d.embedding <=> query_embedding) AS similarity
-  FROM documents d
-  WHERE
-    (filter_tenant_id IS NULL OR d.tenant_id = filter_tenant_id)
-  ORDER BY d.embedding <=> query_embedding
+    fused.id,
+    fused.content,
+    fused.metadata,
+    fused.rrf_score,
+    COALESCE(fused.dense_rank, 0)::INT,
+    COALESCE(fused.sparse_rank, 0)::INT
+  FROM fused
+  ORDER BY fused.rrf_score DESC
   LIMIT match_count;
 END;
 $$;
 ```
 
-### 5.2 Metadata Schema Reference
-
-Every chunk stored in the `documents` table must include the following metadata fields:
-
-| Field               | Type          | Required | Description                                              |
-|---------------------|---------------|----------|----------------------------------------------------------|
-| `source`            | string        | Yes      | Original filename (e.g., `"contract.pdf"`)               |
-| `document_id`       | UUID          | Yes      | Unique ID of the parent document                         |
-| `page_number`       | integer       | Yes      | Page number where the chunk originates                   |
-| `bounding_boxes`    | array[array]  | Yes      | List of `[x0, y0, x1, y1]` coordinates for the text     |
-| `section_heading`   | string        | No       | Nearest section heading above the chunk                  |
-| `document_title`    | string        | No       | Title of the document (extracted or provided)            |
-| `chunk_index`       | integer       | Yes      | Sequential index of this chunk within the document       |
-| `total_chunks`      | integer       | Yes      | Total number of chunks produced from this document       |
-| `parser`            | string        | Yes      | Parser used (e.g., `"llamaparse"`)                       |
-| `chunk_strategy`    | string        | Yes      | Strategy used (e.g., `"recursive_character"`)            |
-| `chunk_size_tokens` | integer       | Yes      | Actual token count of this chunk                         |
-| `overlap_tokens`    | integer       | Yes      | Overlap tokens used                                      |
-
 ---
 
-## 6. Ingestion Pipeline — Detailed Specification
+## 7. Pipeline Components — Detailed Specification
 
-### 6.1 Step 1: Document Upload
+### 7.1 Sparse Retrieval (BM25 via tsvector)
 
-**Endpoint**: `POST /ingest`
+PostgreSQL's built-in full-text search provides BM25-equivalent ranking through `ts_rank`. This avoids adding an external search engine (Elasticsearch, Meilisearch) while staying within the Supabase ecosystem.
 
-**Process**:
+**How it works**:
 
-1. Accept file upload (PDF or Markdown) via multipart form data.
-2. Validate file type and size (configurable max, default 50MB).
-3. Upload raw file to Supabase Storage bucket (`documents/{tenant_id}/{filename}`).
-4. Generate a signed URL for downstream processing (expiry: 1 hour).
-5. Create an `ingestion_jobs` record with status `pending`.
-6. Trigger the ingestion pipeline asynchronously.
-7. Return the `job_id` to the client for status polling.
+1. The `fts` column on `documents` is a generated `tsvector` column that automatically tokenizes, stems, and indexes the `content` field.
+2. At query time, the user's query is converted to a `tsquery` using `websearch_to_tsquery()`, which handles natural language input (AND/OR logic, phrase matching).
+3. `ts_rank()` scores each matching document based on term frequency and inverse document frequency — functionally equivalent to BM25 for most use cases.
 
-**Request**:
-```json
-POST /ingest
-Content-Type: multipart/form-data
-Authorization: Bearer <jwt_token>
+**Why not an external BM25 engine?**
 
-{
-  "file": <binary>,
-  "document_title": "Master Services Agreement"  // optional override
-}
-```
+- Supabase's native `tsvector` avoids infrastructure complexity.
+- For the expected document volumes (thousands to low tens-of-thousands of chunks per tenant), PostgreSQL full-text search performs well.
+- If scale demands it in later phases, this can be swapped for Elasticsearch or Typesense without changing the RRF logic.
 
-**Response**:
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "pending",
-  "message": "Ingestion pipeline started"
-}
-```
+### 7.2 Reciprocal Rank Fusion (RRF)
 
-### 6.2 Step 2: Layout-Aware Parsing
+RRF merges the ranked lists from dense and sparse retrieval into a single candidate set without requiring score normalization.
 
-**Tool**: LlamaParse
+**Formula**:
 
-**Process**:
+RRFScore(d) = Σ  1 / (k + rank_r(d))
+r ∈ {dense, sparse}
 
-1. Update job status to `parsing`.
-2. Fetch the file from Supabase Storage using the signed URL.
-3. Pass the file to LlamaParse with layout-aware mode enabled.
-4. Extract structured output containing:
-   - Full text content
-   - Header hierarchy (H1, H2, H3, etc.)
-   - Table structures (preserved as Markdown tables)
-   - Section boundaries
-5. For each text block, capture spatial metadata:
-   - `page_number`: The page where the block appears.
-   - `bounding_boxes`: The `[x0, y0, x1, y1]` coordinates of the block on the page.
-6. If parsing fails, update job status to `failed` with error message.
+Where:
+- `rank_r(d)` is the rank of document `d` in retrieval method `r` (1-indexed)
+- `k` is a smoothing constant (default: 60) that prevents top-ranked documents from dominating
 
-**LlamaParse Configuration**:
+**Example**:
+
+A document ranked #1 in dense and #3 in sparse:
+
+RRFScore = 1/(60+1) + 1/(60+3) = 0.01639 + 0.01587 = 0.03226
+
+A document ranked #2 in dense only (not in sparse results):
+
+RRFScore = 1/(60+2) + 0 = 0.01613
+
+The first document wins because it appeared in both retrieval methods.
+
+**Implementation** (Python, in case the SQL function is insufficient for complex scenarios):
+
 ```python
-from llama_parse import LlamaParse
+def reciprocal_rank_fusion(
+    dense_results: list[dict],
+    sparse_results: list[dict],
+    k: int = 60
+) -> list[dict]:
+    """Fuse dense and sparse ranked lists using RRF."""
+    scores = {}
+    doc_map = {}
 
-parser = LlamaParse(
-    api_key=LLAMA_CLOUD_API_KEY,
-    result_type="markdown",           # Structured Markdown output
-    parsing_instruction=(
-        "Extract all text preserving section hierarchy. "
-        "Preserve table structures as Markdown tables. "
-        "Identify and tag all headers with their level."
-    ),
-    verbose=True,
-)
+    for rank, doc in enumerate(dense_results, start=1):
+        doc_id = doc["id"]
+        scores[doc_id] = scores.get(doc_id, 0) + 1 / (k + rank)
+        doc_map[doc_id] = doc
+        doc_map[doc_id]["dense_rank"] = rank
 
-documents = parser.load_data(file_path)
+    for rank, doc in enumerate(sparse_results, start=1):
+        doc_id = doc["id"]
+        scores[doc_id] = scores.get(doc_id, 0) + 1 / (k + rank)
+        if doc_id not in doc_map:
+            doc_map[doc_id] = doc
+        doc_map[doc_id]["sparse_rank"] = rank
+
+    fused = []
+    for doc_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+        entry = doc_map[doc_id]
+        entry["rrf_score"] = score
+        fused.append(entry)
+
+    return fused
 ```
 
-**Output Structure** (per parsed block):
-```json
-{
-  "text": "The liability cap shall not exceed $1,000,000...",
-  "page_number": 5,
-  "bounding_boxes": [[72, 340, 540, 380]],
-  "section_heading": "Section 3.2 — Limitation of Liability",
-  "element_type": "paragraph"
-}
-```
+### 7.3 Cross-Encoder Reranking
 
-### 6.3 Step 3: Chunking Strategy
+After RRF produces a merged candidate pool (~20-30 documents), a cross-encoder reranker rescores each candidate by processing the (query, chunk) pair jointly. This is far more accurate than the independent embeddings used in the retrieval step.
 
-**Method**: Recursive Character Splitting with Context Injection
+**Primary: Cohere Rerank API**
 
-**Parameters**:
-
-| Parameter       | Value      | Rationale                                                       |
-|-----------------|------------|-----------------------------------------------------------------|
-| Chunk Size      | 600–800 tokens | Fits within LLM context; preserves semantic coherence       |
-| Overlap         | 100 tokens | Prevents loss of context at chunk boundaries                    |
-| Separators      | `["\n\n", "\n", ". ", " "]` | Splits on semantic boundaries first          |
-
-**Process**:
-
-1. Update job status to `chunking`.
-2. For each parsed block, apply recursive character splitting.
-3. Respect semantic boundaries: prefer splitting at paragraph breaks, then sentence breaks.
-4. For each chunk, inject situated context:
-   - Prepend the document title (if available).
-   - Prepend the nearest section heading.
-   - This helps the embedding model understand the chunk's place in the document.
-5. Assign sequential `chunk_index` values.
-6. Calculate `total_chunks` for the document.
-7. Preserve the spatial metadata (page number, bounding boxes) from the parsing step.
-
-**Implementation**:
 ```python
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+import cohere
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=700,           # Target: 600-800 token range
-    chunk_overlap=100,
-    length_function=token_counter,  # Use tiktoken for accurate token counting
-    separators=["\n\n", "\n", ". ", " "],
-)
+co = cohere.Client(api_key=COHERE_API_KEY)
 
-chunks = splitter.split_documents(parsed_documents)
+def rerank_chunks(
+    query: str,
+    chunks: list[dict],
+    top_k: int = 5
+) -> list[dict]:
+    """Rerank candidate chunks using Cohere cross-encoder."""
+    documents = [chunk["content"] for chunk in chunks]
+
+    response = co.rerank(
+        model="rerank-english-v3.0",
+        query=query,
+        documents=documents,
+        top_n=top_k,
+        return_documents=False,
+    )
+
+    reranked = []
+    for result in response.results:
+        chunk = chunks[result.index]
+        chunk["rerank_score"] = result.relevance_score
+        reranked.append(chunk)
+
+    return reranked
 ```
 
-**Context Injection Example**:
+**Fallback: Local Cross-Encoder**
 
-[Document: Master Services Agreement]
-[Section: 3.2 — Limitation of Liability]
-The liability cap shall not exceed $1,000,000 in aggregate for all
-claims arising under this agreement. This limitation applies to both
-direct and indirect damages...
-
-### 6.4 Step 4: Embedding Generation
-
-**Model**: OpenAI `text-embedding-3-small` (1536 dimensions)
-
-**Process**:
-
-1. Update job status to `embedding`.
-2. Collect all chunks for the document.
-3. Batch chunks into groups (max 2048 chunks per API call, per OpenAI limits).
-4. Send batches to the OpenAI Embeddings API.
-5. Handle rate limiting with exponential backoff.
-6. Map each embedding vector back to its corresponding chunk.
-
-**Implementation**:
 ```python
+from sentence_transformers import CrossEncoder
+
+model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+def rerank_chunks_local(
+    query: str,
+    chunks: list[dict],
+    top_k: int = 5
+) -> list[dict]:
+    """Rerank using local cross-encoder model."""
+    pairs = [(query, chunk["content"]) for chunk in chunks]
+    scores = model.predict(pairs)
+
+    for i, score in enumerate(scores):
+        chunks[i]["rerank_score"] = float(score)
+
+    reranked = sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)
+    return reranked[:top_k]
+```
+
+**When to use which**:
+
+| Scenario                           | Use Cohere API          | Use Local Model         |
+|------------------------------------|-------------------------|-------------------------|
+| Cloud SaaS deployment              | ✓ (preferred)           |                         |
+| Self-hosted / air-gapped           |                         | ✓ (required)            |
+| Cost-sensitive high-volume         |                         | ✓ (no per-query cost)   |
+| Maximum accuracy                   | ✓ (larger model)        |                         |
+
+### 7.4 Citation-Enforced Generation
+
+This is the core addition of Phase 2 — the LLM generates responses that are grounded in retrieved context and include citation anchors mapping back to source metadata.
+
+**Context Assembly**:
+
+Before sending to the LLM, the top-K reranked chunks are formatted with unique identifiers:
+
+```python
+def assemble_context(chunks: list[dict]) -> str:
+    """Build citation-aware context string for LLM prompt."""
+    context_parts = []
+    for i, chunk in enumerate(chunks):
+        source_id = f"[SOURCE_{i+1}]"
+        meta = chunk["metadata"]
+        header = (
+            f"{source_id}\n"
+            f"Document: {meta.get('document_title', meta.get('source', 'Unknown'))}\n"
+            f"Section: {meta.get('section_heading', 'N/A')}\n"
+            f"Page: {meta.get('page_number', 'N/A')}\n"
+            f"---\n"
+            f"{chunk['content']}"
+        )
+        context_parts.append(header)
+    return "\n\n".join(context_parts)
+```
+
+**Prompt Structure** (stored in YAML, loaded at runtime):
+
+```yaml
+# prompts/rag_generation_v1.yaml
+name: rag_generation_v1
+version: 1
+model: gpt-4o
+temperature: 0.1
+max_tokens: 2048
+
+system_prompt: |
+  You are a precise, domain-expert assistant. Your sole purpose is to answer
+  questions using ONLY the provided source context.
+
+  RULES:
+  1. Answer ONLY based on the provided context. Do not use prior knowledge.
+  2. For every factual claim in your response, include a citation anchor
+     in the format [SOURCE_N] immediately after the claim.
+  3. If multiple sources support a claim, cite all of them: [SOURCE_1][SOURCE_3].
+  4. If the provided context does NOT contain enough information to answer
+     the question, respond EXACTLY with:
+     "I don't have enough information in the available documents to answer
+     this question. The following sources were searched: {sources_list}"
+  5. Do not speculate, infer, or extrapolate beyond what is explicitly stated
+     in the context.
+  6. Preserve technical terminology exactly as it appears in the sources.
+  7. If the context contains conflicting information, acknowledge the conflict
+     and cite both sources.
+
+user_prompt_template: |
+  CONTEXT:
+  {context}
+
+  ---
+
+  QUESTION: {query}
+
+  Provide a precise answer with citations.
+```
+
+**Prompt Loading**:
+
+```python
+import yaml
+from pathlib import Path
+
+def load_prompt(name: str, tenant_id: str | None = None) -> dict:
+    """Load prompt config from YAML file or database."""
+    # Priority: tenant-specific DB prompt > global DB prompt > YAML file
+    if tenant_id:
+        db_prompt = fetch_active_prompt(tenant_id, name)
+        if db_prompt:
+            return db_prompt
+
+    global_prompt = fetch_active_prompt(None, name)
+    if global_prompt:
+        return global_prompt
+
+    # Fallback to YAML
+    path = Path(f"prompts/{name}.yaml")
+    with open(path) as f:
+        return yaml.safe_load(f)
+```
+
+### 7.5 Hallucination Guardrails
+
+The system implements two layers of hallucination defense:
+
+**Layer 1: Relevance Threshold**
+
+After reranking, if the top-ranked chunk's relevance score is below a configurable threshold, the system short-circuits generation and returns a "no sufficient context" response.
+
+```python
+RELEVANCE_THRESHOLD = 0.25  # Cohere rerank scores range 0-1
+
+def check_relevance(reranked_chunks: list[dict]) -> bool:
+    """Check if any chunk meets minimum relevance threshold."""
+    if not reranked_chunks:
+        return False
+    return reranked_chunks[0]["rerank_score"] >= RELEVANCE_THRESHOLD
+```
+
+**Layer 2: Prompt-Based Decline**
+
+The system prompt (Section 7.4) instructs the LLM to explicitly decline if context is insufficient. This acts as a second defense if the relevance threshold is too permissive.
+
+### 7.6 Streaming Response (SSE)
+
+For responsive UX, the generation endpoint streams tokens as they are produced:
+
+```python
+from sse_starlette.sse import EventSourceResponse
 from openai import OpenAI
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-def generate_embeddings(texts: list[str], batch_size: int = 100) -> list[list[float]]:
-    """Generate embeddings in batches with rate limiting."""
-    all_embeddings = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        response = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=batch,
-        )
-        batch_embeddings = [item.embedding for item in response.data]
-        all_embeddings.extend(batch_embeddings)
-    return all_embeddings
-```
+async def stream_generation(prompt: dict, context: str, query: str):
+    """Stream LLM response token-by-token via SSE."""
+    messages = [
+        {"role": "system", "content": prompt["system_prompt"]},
+        {"role": "user", "content": prompt["user_prompt_template"].format(
+            context=context, query=query
+        )},
+    ]
 
-**Cost Estimation** (as of 2025):
-- `text-embedding-3-small`: ~$0.02 per 1M tokens
-- A 100-page PDF ≈ 50,000 tokens ≈ ~$0.001 per document
-- At scale: 10,000 documents ≈ ~$10.00
+    stream = client.chat.completions.create(
+        model=prompt.get("model", "gpt-4o"),
+        messages=messages,
+        temperature=prompt.get("temperature", 0.1),
+        max_tokens=prompt.get("max_tokens", 2048),
+        stream=True,
+    )
 
-### 6.5 Step 5: Multi-Tenant Upsert
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield {"event": "token", "data": delta}
 
-**Process**:
-
-1. For each chunk + embedding pair, construct a record containing:
-   - `tenant_id` (from authenticated user's JWT)
-   - `job_id` (from the ingestion job)
-   - `content` (the chunk text)
-   - `embedding` (the 1536-dim vector)
-   - `metadata` (full metadata object as defined in Section 5.2)
-2. Batch upsert records into the `documents` table via Supabase client.
-3. Update `ingestion_jobs.processed_chunks` as records are inserted.
-4. On completion, update job status to `completed` and set `total_chunks`.
-
-**Implementation**:
-```python
-from supabase import create_client
-
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-
-def upsert_chunks(tenant_id: str, job_id: str, chunks: list[dict]):
-    """Batch upsert chunks with embeddings into Supabase."""
-    records = []
-    for chunk in chunks:
-        records.append({
-            "tenant_id": tenant_id,
-            "job_id": job_id,
-            "content": chunk["content"],
-            "embedding": chunk["embedding"],
-            "metadata": chunk["metadata"],
-        })
-
-    # Batch insert (Supabase supports bulk inserts)
-    response = supabase.table("documents").insert(records).execute()
-    return response
+    yield {"event": "done", "data": ""}
 ```
 
 ---
 
-## 7. Retrieval Contract (Phase 1 — Basic Vector Search)
+## 8. API Design (Phase 2)
 
-### 7.1 Function: `match_documents`
+### 8.1 Updated Endpoints
 
-Phase 1 implements basic cosine similarity retrieval. Hybrid search (BM25 + vector) and reranking are deferred to Phase 2.
+Phase 2 replaces the basic `/query` endpoint and adds a streaming variant.
 
-**Input**:
+#### `POST /query` (Updated)
 
-| Parameter          | Type          | Required | Default | Description                       |
-|--------------------|---------------|----------|---------|-----------------------------------|
-| `query_embedding`  | vector(1536)  | Yes      | —       | Embedding of the user's query     |
-| `match_count`      | integer       | No       | 5       | Number of results to return       |
-| `filter_tenant_id` | UUID          | No       | NULL    | Tenant scope (enforced via RLS)   |
-
-**Output** (per result):
-
-| Field        | Type   | Description                                    |
-|--------------|--------|------------------------------------------------|
-| `id`         | UUID   | Chunk ID                                       |
-| `content`    | text   | The chunk text                                 |
-| `metadata`   | JSONB  | Full metadata (source, page, bbox, etc.)       |
-| `similarity` | float  | Cosine similarity score (0 to 1)               |
-
-### 7.2 Query Flow
-
-User Query (text)
-│
-▼
-Embed query → OpenAI text-embedding-3-small
-│
-▼
-Call match_documents(query_embedding, match_count=5)
-│
-▼
-Return top-k chunks with content + metadata
-│
-▼
-(Phase 2: Pass to LLM with citation enforcement)
-
----
-
-## 8. API Design (Phase 1)
-
-### 8.1 Endpoints
-
-#### `POST /ingest`
-
-Upload a document and trigger the ingestion pipeline.
-
-**Headers**:
-- `Authorization: Bearer <jwt_token>` (tenant identity)
-
-**Body**: multipart/form-data with `file` field
-
-**Response** (`202 Accepted`):
-```json
-{
-  "job_id": "uuid",
-  "status": "pending",
-  "message": "Ingestion pipeline started"
-}
-```
-
----
-
-#### `GET /status/{job_id}`
-
-Poll the progress of an ingestion job.
-
-**Headers**:
-- `Authorization: Bearer <jwt_token>`
-
-**Response** (`200 OK`):
-```json
-{
-  "job_id": "uuid",
-  "status": "embedding",
-  "file_name": "contract.pdf",
-  "total_chunks": 45,
-  "processed_chunks": 32,
-  "created_at": "2025-04-13T10:00:00Z",
-  "updated_at": "2025-04-13T10:02:15Z"
-}
-```
-
-**Status Values**: `pending` → `parsing` → `chunking` → `embedding` → `completed` | `failed`
-
----
-
-#### `POST /query`
-
-Accept a natural language query and return relevant chunks.
+Full hybrid retrieval → rerank → generate pipeline. Returns a complete response with citations.
 
 **Headers**:
 - `Authorization: Bearer <jwt_token>`
@@ -665,7 +611,11 @@ Accept a natural language query and return relevant chunks.
 ```json
 {
   "query": "What is the liability cap in the MSA?",
-  "match_count": 5
+  "match_count": 5,
+  "stream": false,
+  "include_sources": true,
+  "rerank": true,
+  "prompt_name": "rag_generation_v1"
 }
 ```
 
@@ -673,9 +623,11 @@ Accept a natural language query and return relevant chunks.
 ```json
 {
   "query": "What is the liability cap in the MSA?",
-  "results": [
+  "answer": "The liability cap shall not exceed $1,000,000 in aggregate for all claims arising under the agreement [SOURCE_1]. This limitation applies to both direct and indirect damages [SOURCE_1], and is governed by Section 3.2 of the Master Services Agreement [SOURCE_2].",
+  "citations": [
     {
-      "id": "uuid",
+      "source_id": "SOURCE_1",
+      "chunk_id": "uuid-chunk-1",
       "content": "The liability cap shall not exceed...",
       "metadata": {
         "source": "contract.pdf",
@@ -684,136 +636,231 @@ Accept a natural language query and return relevant chunks.
         "section_heading": "Section 3.2 — Limitation of Liability",
         "document_title": "Master Services Agreement"
       },
-      "similarity": 0.92
+      "rerank_score": 0.95,
+      "rrf_score": 0.032
+    },
+    {
+      "source_id": "SOURCE_2",
+      "chunk_id": "uuid-chunk-2",
+      "content": "Section 3.2 governs all liability...",
+      "metadata": {
+        "source": "contract.pdf",
+        "page_number": 6,
+        "bounding_boxes": [[72, 100, 540, 140]],
+        "section_heading": "Section 3.2 — Limitation of Liability",
+        "document_title": "Master Services Agreement"
+      },
+      "rerank_score": 0.88,
+      "rrf_score": 0.028
+    }
+  ],
+  "retrieval_metadata": {
+    "dense_results": 20,
+    "sparse_results": 12,
+    "rrf_candidates": 26,
+    "reranked_top_k": 5,
+    "model": "gpt-4o",
+    "prompt_version": "rag_generation_v1:v1",
+    "latency_ms": {
+      "embedding": 45,
+      "dense_retrieval": 32,
+      "sparse_retrieval": 18,
+      "rrf_fusion": 2,
+      "reranking": 380,
+      "generation": 1200,
+      "total": 1677
+    }
+  }
+}
+```
+
+#### `POST /query/stream`
+
+Same pipeline, but streams the generation step via SSE.
+
+**Body**: Same as `/query` (the `stream` field is ignored; this endpoint always streams).
+
+**SSE Events**:
+
+```
+event: sources
+data: {"citations": [...]}    ← Sent first, before generation begins
+event: token
+data: "The"
+event: token
+data: " liability"
+event: token
+data: " cap"
+...
+event: done
+data: {"retrieval_metadata": {...}}
+```
+The `sources` event is sent before generation begins so the frontend can pre-render citation cards while tokens stream in.
+
+#### `GET /prompts` (New)
+
+List available prompt templates for the authenticated tenant.
+
+**Response** (`200 OK`):
+```json
+{
+  "prompts": [
+    {
+      "name": "rag_generation_v1",
+      "version": 1,
+      "is_active": true,
+      "model": "gpt-4o",
+      "created_at": "2025-04-20T10:00:00Z"
     }
   ]
 }
 ```
 
----
+#### `POST /prompts` (New)
 
-#### `GET /health`
+Create or update a prompt template. Setting `is_active: true` deactivates the previous version for that name.
 
-Health check endpoint.
-
-**Response** (`200 OK`):
+**Body**:
 ```json
 {
-  "status": "healthy",
-  "version": "0.1.0",
-  "supabase": "connected",
-  "openai": "connected"
+  "name": "rag_generation_v1",
+  "system_prompt": "...",
+  "user_prompt_template": "...",
+  "metadata": {
+    "model": "gpt-4o",
+    "temperature": 0.1,
+    "max_tokens": 2048
+  }
 }
+```
+
+### 8.2 Existing Endpoints (Unchanged)
+
+These Phase 1 endpoints remain as-is:
+
+- `POST /ingest` — Document upload and ingestion
+- `GET /status/{job_id}` — Ingestion job polling
+- `GET /health` — Health check (extended to include Cohere connectivity)
+
+---
+
+## 9. Pipeline Orchestrator (Phase 2 Query Pipeline)
+
+### 9.1 Orchestration Flow
+
+The query pipeline is orchestrated as a sequential chain using LangChain/LangGraph:
+
+```python
+from langchain_core.runnables import RunnableSequence
+
+query_pipeline = RunnableSequence(
+    embed_query,           # Step 1: Embed the user query
+    hybrid_retrieve,       # Step 2: Dense + Sparse + RRF
+    rerank,                # Step 3: Cross-encoder reranking
+    check_relevance,       # Step 4: Hallucination guardrail
+    assemble_context,      # Step 5: Build citation-aware prompt
+    generate_response,     # Step 6: LLM generation with citations
+    parse_citations,       # Step 7: Extract and resolve citation anchors
+)
+```
+
+### 9.2 Citation Resolution
+
+After generation, the response text is parsed to extract `[SOURCE_N]` anchors and resolve them to full metadata:
+
+```python
+import re
+
+def resolve_citations(
+    response_text: str,
+    chunks: list[dict]
+) -> tuple[str, list[dict]]:
+    """Extract citation anchors and map to chunk metadata."""
+    pattern = r'\[SOURCE_(\d+)\]'
+    cited_indices = set(int(m) for m in re.findall(pattern, response_text))
+
+    citations = []
+    for idx in sorted(cited_indices):
+        if 1 <= idx <= len(chunks):
+            chunk = chunks[idx - 1]
+            citations.append({
+                "source_id": f"SOURCE_{idx}",
+                "chunk_id": chunk["id"],
+                "content": chunk["content"][:200] + "...",
+                "metadata": chunk["metadata"],
+                "rerank_score": chunk.get("rerank_score"),
+                "rrf_score": chunk.get("rrf_score"),
+            })
+
+    return response_text, citations
 ```
 
 ---
 
-## 9. Security Model
+## 10. Project Structure (Phase 2 Additions)
 
-### 9.1 Key Separation
-
-| Key Type             | Used By                | Permissions                              |
-|----------------------|------------------------|------------------------------------------|
-| `service_role` key   | Ingestion pipeline     | Full DB access; bypasses RLS             |
-| `anon` / `authenticated` key | Client-side queries | Read-only; scoped by RLS policies     |
-
-### 9.2 Tenant Isolation Flow
-
-Client Request (with JWT)
-│
-▼
-Supabase Auth verifies JWT
-│
-▼
-Extract organization_id from app_metadata
-│
-▼
-RLS policy filters: tenant_id = organization_id
-│
-▼
-Only tenant's own documents are returned
-
-### 9.3 Security Checklist
-
-- [ ] `service_role` key stored in server-side environment variables only
-- [ ] `anon` key used only in client-side requests
-- [ ] RLS enabled on `documents` and `ingestion_jobs` tables
-- [ ] JWT `app_metadata.organization_id` set during user registration
-- [ ] File uploads scoped to tenant directory: `documents/{tenant_id}/`
-- [ ] Signed URLs expire after 1 hour
-- [ ] Input validation on file type (PDF, MD only) and size (max 50MB)
-
----
-
-## 10. Project Structure
-
+```
 rag-ingestion/
 ├── app/
-│   ├── init.py
-│   ├── main.py                    # FastAPI app initialization
-│   ├── config.py                  # Pydantic Settings (env vars)
 │   ├── api/
-│   │   ├── init.py
-│   │   ├── ingest.py              # POST /ingest endpoint
-│   │   ├── status.py              # GET /status/{job_id} endpoint
-│   │   ├── query.py               # POST /query endpoint
-│   │   └── health.py              # GET /health endpoint
+│   │   ├── query.py               # UPDATED: Hybrid retrieval + generation
+│   │   ├── query_stream.py        # NEW: SSE streaming endpoint
+│   │   └── prompts.py             # NEW: Prompt management endpoints
 │   ├── pipeline/
-│   │   ├── init.py
-│   │   ├── orchestrator.py        # Main pipeline coordinator
-│   │   ├── parser.py              # LlamaParse integration
-│   │   ├── chunker.py             # Recursive character splitter
-│   │   ├── embedder.py            # OpenAI embedding generation
-│   │   └── upserter.py            # Supabase batch upsert
+│   │   ├── orchestrator.py        # UPDATED: Phase 2 query pipeline
+│   │   ├── retriever_dense.py     # NEW: Vector similarity retrieval
+│   │   ├── retriever_sparse.py    # NEW: tsvector/BM25 retrieval
+│   │   ├── fusion.py              # NEW: RRF implementation
+│   │   ├── reranker.py            # NEW: Cross-encoder reranking
+│   │   ├── generator.py           # NEW: Citation-enforced LLM generation
+│   │   └── citation_resolver.py   # NEW: Parse and resolve citation anchors
 │   ├── models/
-│   │   ├── init.py
-│   │   ├── schemas.py             # Pydantic request/response models
-│   │   └── database.py            # Supabase client initialization
+│   │   └── schemas.py             # UPDATED: New request/response models
 │   └── utils/
-│       ├── init.py
-│       ├── token_counter.py       # tiktoken-based token counting
-│       └── logger.py              # Structured logging setup
+│       └── prompt_loader.py       # NEW: YAML + DB prompt loading
+├── prompts/
+│   └── rag_generation_v1.yaml     # NEW: Default generation prompt
 ├── sql/
-│   └── schema.sql                 # Full database schema (Section 5.1)
+│   ├── schema.sql                 # Phase 1 schema (unchanged)
+│   └── phase2_migration.sql       # NEW: fts column, hybrid function, prompts table
 ├── tests/
-│   ├── init.py
-│   ├── test_parser.py
-│   ├── test_chunker.py
-│   ├── test_embedder.py
-│   ├── test_pipeline.py
-│   └── test_api.py
-├── .env.example                   # Template for environment variables
-├── .gitignore
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── pyproject.toml
-└── README.md
+│   ├── test_retriever_sparse.py   # NEW
+│   ├── test_fusion.py             # NEW
+│   ├── test_reranker.py           # NEW
+│   ├── test_generator.py          # NEW
+│   ├── test_citation_resolver.py  # NEW
+│   └── test_query_pipeline.py     # NEW: End-to-end query pipeline test
+└── ...
+```
 
 ---
 
-## 11. Environment Variables
+## 11. Environment Variables (Phase 2 Additions)
 
 ```env
-# Supabase
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJ...       # Server-side only; never expose
-SUPABASE_ANON_KEY=eyJ...               # Client-side safe
+# --- Phase 1 variables remain unchanged ---
 
-# OpenAI
-OPENAI_API_KEY=sk-...
+# Cohere (Reranking)
+COHERE_API_KEY=...
 
-# LlamaParse
-LLAMA_CLOUD_API_KEY=llx-...
+# Generation
+GENERATION_MODEL=gpt-4o             # or gpt-4o-mini for cost savings
+GENERATION_TEMPERATURE=0.1
+GENERATION_MAX_TOKENS=2048
 
-# Application
-APP_ENV=development                     # development | staging | production
-APP_VERSION=0.1.0
-MAX_FILE_SIZE_MB=50
-ALLOWED_FILE_TYPES=pdf,md
+# Retrieval Tuning
+DENSE_TOP_N=20
+SPARSE_TOP_N=20
+RRF_K=60
+RERANK_TOP_K=5
+RELEVANCE_THRESHOLD=0.25
 
-# Optional: Celery + Redis
-REDIS_URL=redis://localhost:6379/0
+# Reranker Selection
+RERANKER_PROVIDER=cohere             # cohere | local
+LOCAL_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+
+# Prompt
+DEFAULT_PROMPT_NAME=rag_generation_v1
 ```
 
 ---
@@ -822,64 +869,102 @@ REDIS_URL=redis://localhost:6379/0
 
 ### 12.1 Performance
 
-- **Batch Embeddings**: Process chunks in batches of 100 to minimize API round-trips.
-- **HNSW Indexing**: Use `vector_cosine_ops` for optimized ANN search. HNSW provides sub-linear query time.
-- **Connection Pooling**: Use Supabase's built-in connection pooler (PgBouncer) for high-concurrency workloads.
-- **Async Processing**: FastAPI's async endpoints ensure the API remains responsive during pipeline execution.
+- **Parallel Retrieval**: Dense and sparse searches run concurrently (Python `asyncio.gather` or the SQL function handles both in a single call). This keeps retrieval latency at the slower of the two, not the sum.
+- **Reranker Latency**: The Cohere API call is the single largest latency contributor (~200-500ms for 20 documents). For latency-sensitive applications, reduce the reranker input count or use the local model.
+- **Streaming**: SSE streaming hides generation latency from the user. Time-to-first-token is the key metric, not total generation time.
+- **Context Window Management**: With `gpt-4o` (128K context), 5 chunks of 700 tokens each uses ~3,500 tokens of context — well within limits. The prompt itself adds ~500 tokens. Total input is ~4,000 tokens per query.
 
 ### 12.2 Reliability
 
-- **Retry Logic**: Implement exponential backoff for OpenAI API calls and Supabase upserts (max 3 retries).
-- **Idempotent Processing**: Use `job_id` to prevent duplicate chunk insertion on retries.
-- **Graceful Failure**: If any pipeline step fails, update `ingestion_jobs.status` to `failed` with a descriptive `error_message`.
-- **Atomic Status Updates**: Use database transactions to ensure job status and chunk counts stay consistent.
+- **Reranker Fallback**: If Cohere API is unavailable, automatically fall back to the local cross-encoder. Log the fallback event.
+- **Generation Timeout**: Set a 30-second timeout on LLM generation. If exceeded, return whatever has been generated so far (for streaming) or a timeout error (for non-streaming).
+- **Empty Retrieval**: If both dense and sparse retrieval return zero results, short-circuit to a "no relevant documents found" response without calling the LLM.
+- **Retry Logic**: Same exponential backoff from Phase 1 applies to Cohere and OpenAI generation calls (max 3 retries).
 
 ### 12.3 Observability
 
-- **Structured Logging**: Log each pipeline step with `job_id`, `tenant_id`, timestamp, and duration.
-- **Metrics to Track**:
-  - Ingestion latency (total and per-step)
-  - Chunks per document
-  - Embedding API latency
-  - Failed ingestion rate
-  - Storage utilization per tenant
-- **Error Tracking**: Log full stack traces for failed jobs; include document metadata for debugging.
+- **Per-Step Latency**: Track and return latency for each pipeline step (embedding, dense, sparse, RRF, reranking, generation) in the response metadata.
+- **Citation Coverage**: Track the percentage of generated claims that include citation anchors. Low coverage suggests the prompt needs tuning.
+- **Reranker Score Distribution**: Monitor the distribution of rerank scores. A consistently low max score suggests retrieval quality issues upstream.
+- **Metrics to Add**:
+  - Query latency (total and per-step)
+  - Reranker fallback rate
+  - Relevance threshold rejection rate
+  - Citation anchor count per response
+  - Token usage per query (input + output)
 
-### 12.4 Scalability Notes
+### 12.4 Cost Estimation
 
-- **Tenant Growth**: The Pool pattern (shared index + RLS) scales to hundreds of tenants. Monitor query latency as the index grows.
-- **Document Volume**: For >100k chunks, consider partitioning the `documents` table by `tenant_id`.
-- **Embedding Costs**: At 10k+ documents/month, evaluate switching to open-source embedding models (e.g., `all-MiniLM-L6-v2`) to reduce cost.
+| Component                | Cost per Query (approx)  | Notes                              |
+|--------------------------|--------------------------|-------------------------------------|
+| Query embedding          | ~$0.000002               | Single embedding call               |
+| Cohere rerank            | ~$0.002                  | 20 documents reranked               |
+| GPT-4o generation        | ~$0.01-0.03              | ~4K input + ~500 output tokens      |
+| GPT-4o-mini generation   | ~$0.001-0.003            | 10x cheaper, slightly lower quality |
+| **Total (GPT-4o)**       | **~$0.012-0.032**        |                                     |
+| **Total (GPT-4o-mini)**  | **~$0.003-0.005**        |                                     |
 
----
-
-## 13. Deliverables (Phase 1 Completion Criteria)
-
-| #  | Deliverable                                      | Acceptance Criteria                                                |
-|----|--------------------------------------------------|--------------------------------------------------------------------|
-| 1  | Working ingestion pipeline                       | PDF upload → parse → chunk → embed → store in Supabase             |
-| 2  | Supabase pgvector database setup                 | Schema deployed; RLS policies active; HNSW index created           |
-| 3  | Chunk + embedding storage with metadata          | Every chunk has content, embedding, page number, bounding boxes    |
-| 4  | Retrieval-ready dataset with citations            | `match_documents` returns ranked chunks with full metadata         |
-| 5  | RESTful API (3 endpoints)                        | `/ingest`, `/status/{job_id}`, `/query` all functional             |
-| 6  | Multi-tenant isolation                           | Tenant A cannot access Tenant B's documents via API                |
-| 7  | Basic test suite                                 | Unit tests for parser, chunker, embedder; integration test for API |
-| 8  | Docker-ready deployment                          | `docker-compose up` brings up the full stack locally               |
+At 10,000 queries/month with GPT-4o: ~$120-320/month for generation costs.
 
 ---
 
-## 14. Phase 2 Preview (Next Steps)
+## 13. Security Considerations (Phase 2)
 
-Phase 2 will build on this foundation by introducing:
+All Phase 1 security measures remain in effect. Additional Phase 2 concerns:
 
-1. **Hybrid Search**: Combine BM25 (sparse/keyword) retrieval with vector (dense/semantic) retrieval using Reciprocal Rank Fusion (RRF).
-2. **Cross-Encoder Reranking**: Use a cross-encoder model to rescore candidate chunks for higher precision before passing to the LLM.
-3. **Citation Enforcement in LLM Output**: Instruct the LLM to generate responses with citation anchors that map back to the metadata captured in Phase 1.
-4. **Hallucination Guardrails**: If retrieved context does not contain the answer, the system will explicitly decline rather than hallucinate.
+- **Prompt Injection Defense**: The system prompt explicitly constrains the LLM to use only provided context. User queries are placed in the `user` role, not the `system` role. However, this is not foolproof — Phase 3 evaluation should include adversarial prompt injection tests.
+- **Tenant Isolation in Generation**: The retrieval step is tenant-scoped via RLS. The LLM never sees chunks from other tenants. The `tenant_id` is never included in the prompt sent to the LLM.
+- **API Key Security**: The Cohere API key is server-side only, same handling as OpenAI and LlamaParse keys.
+- **Prompt Versioning Audit Trail**: The `prompt_versions` table retains all versions (deactivated prompts are not deleted), providing a full audit trail of prompt changes.
 
 ---
 
-## 15. Key Insight
+## 14. Deliverables (Phase 2 Completion Criteria)
 
-> A production RAG system is only as good as its ingestion pipeline. Poor parsing or chunking directly degrades retrieval quality and increases hallucination risk. Phase 1 exists to ensure that by the time a query reaches the retrieval layer, the knowledge base is structured, searchable, and citation-ready — because no amount of reranking or prompt engineering can fix garbage in the index.
+| #  | Deliverable                                        | Acceptance Criteria                                                                    |
+|----|----------------------------------------------------|----------------------------------------------------------------------------------------|
+| 1  | Full-text search column + index                    | `fts` tsvector column on `documents`; GIN index active                                  |
+| 2  | Hybrid retrieval function                          | `match_documents_hybrid` returns RRF-fused results from dense + sparse                  |
+| 3  | Cross-encoder reranking                            | Cohere rerank integration with local fallback; top-K selection working                  |
+| 4  | Citation-enforced generation                       | LLM responses include `[SOURCE_N]` anchors; citations resolve to chunk metadata         |
+| 5  | Hallucination guardrails                           | System declines when relevance threshold not met; prompt enforces context-only answers   |
+| 6  | Updated `/query` endpoint                          | Full pipeline: embed → hybrid retrieve → rerank → generate → cite                       |
+| 7  | Streaming `/query/stream` endpoint                 | SSE streaming with sources sent before generation begins                                 |
+| 8  | Prompt management (`/prompts` endpoints + YAML)    | Versioned prompts loadable from DB or YAML; tenant-specific overrides supported          |
+| 9  | Per-step latency tracking                          | Response includes latency breakdown for each pipeline stage                              |
+| 10 | Test suite for Phase 2 components                  | Unit tests for sparse retriever, RRF, reranker, generator, citation resolver             |
+
+---
+
+## 15. Migration Checklist
+
+Steps to upgrade a running Phase 1 deployment to Phase 2:
+
+1. Run `sql/phase2_migration.sql` to add the `fts` column, GIN index, `prompt_versions` table, and `match_documents_hybrid` function.
+2. The `fts` column is `GENERATED ALWAYS`, so it auto-populates for all existing rows — no backfill needed.
+3. Add Phase 2 environment variables (Cohere key, generation model, retrieval tuning params).
+4. Install new Python dependencies (`cohere`, `sentence-transformers`, `pyyaml`, `sse-starlette`, `tiktoken`).
+5. Deploy new pipeline modules and updated API endpoints.
+6. Place default prompt YAML in `prompts/` directory.
+7. Verify with an end-to-end test: upload a document (Phase 1), then query it (Phase 2) and confirm citations in the response.
+
+---
+
+## 16. Phase 3 Preview (Next Steps)
+
+Phase 3 will build on this query pipeline by introducing:
+
+1. **Golden Dataset Creation**: Curate 50-200 question-answer pairs with verified source grounding for evaluation.
+2. **Ragas Evaluation Pipeline**: Automated measurement of faithfulness, answer relevance, context precision, and context recall.
+3. **CI-Gated Quality Thresholds**: GitHub Actions integration that blocks merges if evaluation scores drop below configurable minimums (e.g., faithfulness < 0.85).
+4. **Regression Detection**: Track evaluation metrics over time to detect silent quality degradation.
+
+---
+
+## 17. Key Insight
+
+> Phase 1 ensured the knowledge base is structured and searchable. Phase 2 ensures the answers are precise and trustworthy. The combination of hybrid retrieval (catching what vector search misses), cross-encoder reranking (filtering noise before generation), and citation enforcement (proving every claim) is what separates a demo from a production system. Without these layers, the LLM is guessing with context; with them, it's reasoning with evidence.
+
+
+
 

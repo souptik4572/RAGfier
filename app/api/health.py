@@ -22,10 +22,12 @@ async def health() -> HealthResponse:
             supabase_status = "error"
 
     openai_status = "configured" if settings.openai_api_key else "not_configured"
+    cohere_status = "configured" if settings.cohere_api_key else "not_configured"
 
     return HealthResponse(
         status="healthy",
         version=settings.app_version,
         supabase=supabase_status,
         openai=openai_status,
+        cohere=cohere_status,
     )

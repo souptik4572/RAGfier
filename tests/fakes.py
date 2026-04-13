@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any, Dict, List, Optional
 
 
@@ -8,7 +9,7 @@ class FakeQuery:
 
     def __init__(self, table: "FakeTable") -> None:
         self._table = table
-        self._filters: list[tuple[str, Any]] = []
+        self._filters: list[tuple[str, str, Any]] = []
         self._limit: Optional[int] = None
         self._op: Optional[str] = None
         self._payload: Any = None
@@ -28,7 +29,12 @@ class FakeQuery:
         return self
 
     def eq(self, column: str, value: Any) -> "FakeQuery":
-        self._filters.append((column, value))
+        self._filters.append(("eq", column, value))
+        return self
+
+    def is_(self, column: str, value: Any) -> "FakeQuery":
+        # Supabase uses is_("col", "null") to match NULL.
+        self._filters.append(("is", column, value))
         return self
 
     def limit(self, n: int) -> "FakeQuery":
@@ -44,9 +50,13 @@ class FakeQuery:
             records = (
                 self._payload if isinstance(self._payload, list) else [self._payload]
             )
+            stored: List[Dict[str, Any]] = []
             for record in records:
-                self._table.rows.append(dict(record))
-            return _Resp(records)
+                row = dict(record)
+                row.setdefault("id", str(uuid.uuid4()))
+                self._table.rows.append(row)
+                stored.append(row)
+            return _Resp(stored)
 
         if self._op == "update":
             matched = self._apply_filters(self._table.rows)
@@ -65,8 +75,14 @@ class FakeQuery:
 
     def _apply_filters(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         result = rows
-        for col, val in self._filters:
-            result = [r for r in result if r.get(col) == val]
+        for op, col, val in self._filters:
+            if op == "eq":
+                result = [r for r in result if r.get(col) == val]
+            elif op == "is":
+                if val in ("null", None):
+                    result = [r for r in result if r.get(col) is None]
+                else:
+                    result = [r for r in result if r.get(col) == val]
         return result
 
 
@@ -140,3 +156,70 @@ class FakeEmbeddings:
 class FakeOpenAIClient:
     def __init__(self) -> None:
         self.embeddings = FakeEmbeddings()
+
+
+class _FakeChoiceMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content: str) -> None:
+        self.message = _FakeChoiceMessage(content)
+
+
+class _FakeChatCompletion:
+    def __init__(self, content: str) -> None:
+        self.choices = [_FakeChoice(content)]
+
+
+class _FakeStreamDelta:
+    def __init__(self, content: Optional[str]) -> None:
+        self.content = content
+
+
+class _FakeStreamChoice:
+    def __init__(self, content: Optional[str]) -> None:
+        self.delta = _FakeStreamDelta(content)
+
+
+class _FakeStreamChunk:
+    def __init__(self, content: Optional[str]) -> None:
+        self.choices = [_FakeStreamChoice(content)]
+
+
+class FakeAsyncStream:
+    def __init__(self, tokens: List[str]) -> None:
+        self._tokens = list(tokens)
+
+    def __aiter__(self) -> "FakeAsyncStream":
+        return self
+
+    async def __anext__(self) -> _FakeStreamChunk:
+        if not self._tokens:
+            raise StopAsyncIteration
+        return _FakeStreamChunk(self._tokens.pop(0))
+
+
+class FakeChatCompletions:
+    def __init__(self, response_text: str = "stub answer [SOURCE_1]") -> None:
+        self.response_text = response_text
+        self.stream_tokens: List[str] = ["Hello", " ", "world", " [SOURCE_1]"]
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if kwargs.get("stream"):
+            return FakeAsyncStream(self.stream_tokens)
+        return _FakeChatCompletion(self.response_text)
+
+
+class FakeChat:
+    def __init__(self, response_text: str = "stub answer [SOURCE_1]") -> None:
+        self.completions = FakeChatCompletions(response_text)
+
+
+class FakeAsyncOpenAIClient:
+    def __init__(self, response_text: str = "stub answer [SOURCE_1]") -> None:
+        self.embeddings = FakeEmbeddings()
+        self.chat = FakeChat(response_text)
