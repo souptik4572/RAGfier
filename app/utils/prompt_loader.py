@@ -16,6 +16,28 @@ class PromptNotFoundError(LookupError):
     """Raised when a prompt cannot be found in DB or YAML sources."""
 
 
+def _resolve_setting_reference(value: Any) -> Any:
+    """Resolve `${settings_key}` placeholders against app settings.
+
+    This keeps prompt YAML concise while centralizing runtime defaults in
+    the shared config source (env/.env/JSON settings).
+    """
+    if not isinstance(value, str):
+        return value
+    if not (value.startswith("${") and value.endswith("}")):
+        return value
+
+    key = value[2:-1].strip()
+    if not key:
+        return value
+
+    settings = get_settings()
+    if not hasattr(settings, key):
+        logger.warning("prompt_loader.unknown_setting_ref", setting_key=key)
+        return value
+    return getattr(settings, key)
+
+
 def _prompts_dir() -> Path:
     settings = get_settings()
     base = Path(settings.prompts_dir)
@@ -106,6 +128,9 @@ def load_prompt(
             return global_prompt
 
     data = load_yaml_prompt(name)
+    model = _resolve_setting_reference(data.get("model"))
+    temperature = _resolve_setting_reference(data.get("temperature"))
+    max_tokens = _resolve_setting_reference(data.get("max_tokens"))
     return {
         "id": None,
         "name": data.get("name", name),
@@ -113,13 +138,13 @@ def load_prompt(
         "system_prompt": data["system_prompt"],
         "user_prompt_template": data["user_prompt_template"],
         "metadata": {
-            "model": data.get("model"),
-            "temperature": data.get("temperature"),
-            "max_tokens": data.get("max_tokens"),
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         },
-        "model": data.get("model"),
-        "temperature": data.get("temperature"),
-        "max_tokens": data.get("max_tokens"),
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "source": "yaml",
         "tenant_id": None,
         "is_active": True,

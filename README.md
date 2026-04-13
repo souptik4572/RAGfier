@@ -10,6 +10,22 @@ guardrails and SSE streaming.
 See [SPEC.md](SPEC.md) (Phase 2) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
 full technical specs, and [AGENTS.md](AGENTS.md) for coding conventions.
 
+## Configuration Model
+
+RAGfier uses a hybrid configuration model:
+
+- **Sensitive values** (API keys, tokens, service-role credentials) live in environment variables / `.env`.
+- **Non-sensitive runtime defaults** live in [config/config.defaults.json](config/config.defaults.json) and are committed to source control.
+
+Settings precedence (highest to lowest):
+
+1. Explicit initialization values
+2. Environment variables
+3. `.env`
+4. JSON defaults file (`config/config.defaults.json`)
+
+This keeps deploy-time secrets out of source control while making safe defaults auditable and versioned.
+
 ## Architecture
 
 ### Ingestion (Phase 1)
@@ -162,6 +178,10 @@ cp .env.example .env
 #           GENERATION_MODEL, GENERATION_TEMPERATURE, GENERATION_MAX_TOKENS
 #           DENSE_TOP_N, SPARSE_TOP_N, RRF_K, RERANK_TOP_K, RELEVANCE_THRESHOLD
 
+# Non-sensitive defaults are versioned in:
+#   config/config.defaults.json
+# You can override any of them via env vars or .env
+
 # 3. Database
 #    Open Supabase SQL Editor and run, in order:
 #      sql/schema.sql              (Phase 1)
@@ -239,6 +259,17 @@ new `POST /prompts` creates a new row, the previous active row for the same
 deleted. Local development can skip the database entirely — the loader falls
 back to `prompts/<name>.yaml`. The default prompt ships as
 [prompts/rag_generation_v1.yaml](prompts/rag_generation_v1.yaml).
+
+YAML prompts can reference centralized settings using `${setting_name}`. Example:
+
+```yaml
+model: ${generation_model}
+temperature: ${generation_temperature}
+max_tokens: ${generation_max_tokens}
+```
+
+Those values are resolved through the same settings chain above, so prompt
+files can stay declarative without duplicating non-sensitive defaults.
 
 The system prompt hard-constrains the LLM to the provided context, requires
 `[SOURCE_N]` anchors on every factual claim, and mandates an exact decline

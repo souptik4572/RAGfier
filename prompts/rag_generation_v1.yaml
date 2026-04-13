@@ -1,8 +1,8 @@
 name: rag_generation_v1
 version: 1
-model: gpt-4o
-temperature: 0.1
-max_tokens: 2048
+model: ${generation_model}
+temperature: ${generation_temperature}
+max_tokens: ${generation_max_tokens}
 
 system_prompt: |
   You are a precise, domain-expert assistant. Your sole purpose is to answer

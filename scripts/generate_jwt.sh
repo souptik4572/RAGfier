@@ -6,8 +6,8 @@ set -euo pipefail
 #
 # Required env vars:
 #   SUPABASE_URL
-#   SERVICE_ROLE_KEY
-#   ANON_KEY
+#   SUPABASE_SERVICE_ROLE_KEY (or SERVICE_ROLE_KEY)
+#   SUPABASE_ANON_KEY (or ANON_KEY)
 #   TENANT_NAME
 #   TENANT_SLUG
 #   USER_EMAIL
@@ -16,12 +16,16 @@ set -euo pipefail
 # Optional env vars:
 #   QUIET=true   # prints only the JWT token
 
+# Compatibility aliases:
+#   SUPABASE_SERVICE_ROLE_KEY can be used instead of SERVICE_ROLE_KEY
+#   SUPABASE_ANON_KEY can be used instead of ANON_KEY
+
 usage() {
   cat <<'EOF'
 Usage:
   SUPABASE_URL="https://<project-ref>.supabase.co" \
-  SERVICE_ROLE_KEY="<service-role-key>" \
-  ANON_KEY="<anon-key>" \
+  SUPABASE_SERVICE_ROLE_KEY="<service-role-key>" \
+  SUPABASE_ANON_KEY="<anon-key>" \
   TENANT_NAME="Acme Inc" \
   TENANT_SLUG="acme-inc" \
   USER_EMAIL="owner@acme-inc.com" \
@@ -86,6 +90,15 @@ load_env_file_if_exists() {
   fi
 }
 
+map_alias_env_vars() {
+  if [[ -z "${SERVICE_ROLE_KEY:-}" && -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
+    SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
+  fi
+  if [[ -z "${ANON_KEY:-}" && -n "${SUPABASE_ANON_KEY:-}" ]]; then
+    ANON_KEY="$SUPABASE_ANON_KEY"
+  fi
+}
+
 require_cmd curl
 require_cmd jq
 
@@ -97,6 +110,8 @@ fi
 if has_missing_required_env; then
   load_env_file_if_exists "$SCRIPT_DIR/../.env"
 fi
+
+map_alias_env_vars
 
 require_env SUPABASE_URL
 require_env SERVICE_ROLE_KEY
