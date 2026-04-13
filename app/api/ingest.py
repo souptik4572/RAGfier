@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.models.database import get_service_client
 from app.models.schemas import IngestResponse
 from app.pipeline.orchestrator import run_pipeline_task
+from app.utils.api_errors import build_response, raise_api_error
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,23 +44,27 @@ async def ingest_document(
     settings = get_settings()
 
     if not file.filename:
-        raise HTTPException(status_code=422, detail="File must have a name.")
+        raise_api_error(422, "ingest.file_name_required")
 
     file_type = _detect_file_type(file.filename)
     if file_type not in settings.allowed_file_types:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unsupported file type: {file_type}. "
-            f"Allowed: {', '.join(settings.allowed_file_types)}",
+        raise_api_error(
+            422,
+            "ingest.unsupported_file_type",
+            detail={
+                "file_type": file_type,
+                "allowed_file_types": settings.allowed_file_types,
+            },
         )
 
     contents = await file.read()
     if len(contents) == 0:
-        raise HTTPException(status_code=422, detail="Uploaded file is empty.")
+        raise_api_error(422, "ingest.empty_file")
     if len(contents) > settings.max_file_size_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds {settings.max_file_size_mb} MB limit.",
+        raise_api_error(
+            413,
+            "ingest.file_too_large",
+            detail={"max_file_size_mb": settings.max_file_size_mb},
         )
 
     job_id = str(uuid.uuid4())
@@ -110,9 +115,7 @@ async def ingest_document(
             job_id=job_id,
             error=str(exc),
         )
-        raise HTTPException(
-            status_code=500, detail="Failed to create ingestion job."
-        ) from exc
+        raise_api_error(500, "ingest.job_create_failed")
 
     background_tasks.add_task(
         run_pipeline_task,
@@ -132,8 +135,9 @@ async def ingest_document(
         file_size=len(contents),
     )
 
-    return IngestResponse(
+    return build_response(
+        IngestResponse,
+        "ingest.accepted",
         job_id=uuid.UUID(job_id),
         status="pending",
-        message="Ingestion pipeline started",
     )

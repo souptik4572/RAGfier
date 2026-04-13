@@ -1,0 +1,55 @@
+{
+  "common": {
+    "validation_failed": "Validation failed",
+    "internal_error": "Internal server error"
+  },
+  "health": {
+    "fetched": "Health status retrieved successfully"
+  },
+  "auth": {
+    "signup_succeeded": "Signup successful",
+    "login_succeeded": "Login successful",
+    "invalid_credentials": "Invalid email or password.",
+    "email_in_use": "A user with this email already exists.",
+    "tenant_slug_invalid": "Tenant slug could not be derived from tenant name.",
+    "service_role_not_configured": "Supabase service-role auth is not configured.",
+    "anon_not_configured": "Supabase anon auth is not configured.",
+    "malformed_jwt": "Malformed JWT",
+    "invalid_jwt_payload": "Invalid JWT payload",
+    "jwt_payload_not_object": "JWT payload must be an object",
+    "missing_bearer_token": "Missing bearer token",
+    "missing_organization_id": "JWT missing app_metadata.organization_id",
+    "signup_failed": "Signup failed",
+    "login_failed": "Login failed"
+  },
+  "ingest": {
+    "accepted": "Ingestion pipeline started",
+    "file_name_required": "File must have a name.",
+    "unsupported_file_type": "Unsupported file type.",
+    "empty_file": "Uploaded file is empty.",
+    "file_too_large": "Uploaded file exceeds the allowed size limit.",
+    "job_create_failed": "Failed to create ingestion job."
+  },
+  "status": {
+    "fetched": "Job status retrieved successfully",
+    "query_failed": "Failed to query job status.",
+    "job_not_found": "Job not found for this tenant."
+  },
+  "query": {
+    "completed": "Query completed successfully",
+    "declined": "Query declined due to insufficient context",
+    "pipeline_failed": "Query pipeline failed.",
+    "generation_failed": "Generation failed.",
+    "stream_completed": "Query stream completed successfully",
+    "stream_declined": "Query stream declined due to insufficient context",
+    "stream_generation_failed": "Query stream generation failed.",
+    "sources_prepared": "Sources prepared successfully"
+  },
+  "prompts": {
+    "listed": "Prompts retrieved successfully",
+    "created": "Prompt created successfully",
+    "list_failed": "Failed to list prompts.",
+    "create_failed": "Failed to create prompt.",
+    "insert_empty": "Prompt insert returned no row."
+  }
+}

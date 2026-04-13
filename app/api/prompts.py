@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 
 from app.api.auth import AuthContext, get_auth_context
 from app.models.database import get_service_client
@@ -12,6 +12,7 @@ from app.models.schemas import (
     PromptListResponse,
     PromptSummary,
 )
+from app.utils.api_errors import build_response, raise_api_error, with_message
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +25,7 @@ def _rows_to_summaries(rows: list[Dict[str, Any]]) -> list[PromptSummary]:
     for row in rows:
         summaries.append(
             PromptSummary(
+                message="",
                 id=UUID(str(row["id"])),
                 name=row["name"],
                 version=int(row.get("version") or 1),
@@ -61,9 +63,11 @@ async def list_prompts(
         )
     except Exception as exc:
         logger.error("prompts.list_failed", tenant_id=auth.tenant_id, error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to list prompts.") from exc
+        raise_api_error(500, "prompts.list_failed")
 
-    return PromptListResponse(
+    return build_response(
+        PromptListResponse,
+        "prompts.listed",
         prompts=_rows_to_summaries(list(tenant_rows) + list(global_rows or []))
     )
 
@@ -124,9 +128,9 @@ async def create_prompt(
         response = client.table("prompt_versions").insert(record).execute()
     except Exception as exc:
         logger.error("prompts.insert_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to create prompt.") from exc
+        raise_api_error(500, "prompts.create_failed")
 
     rows = response.data or []
     if not rows:
-        raise HTTPException(status_code=500, detail="Prompt insert returned no row.")
-    return _rows_to_summaries(rows)[0]
+        raise_api_error(500, "prompts.insert_empty")
+    return with_message(_rows_to_summaries(rows)[0], "prompts.created")

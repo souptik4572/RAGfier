@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from app.api.auth import AuthContext, get_auth_context
 from app.models.database import get_service_client
 from app.models.schemas import JobStatusResponse
+from app.utils.api_errors import build_response, raise_api_error
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -36,16 +37,19 @@ async def get_job_status(
             tenant_id=auth.tenant_id,
             error=str(exc),
         )
-        raise HTTPException(status_code=500, detail="Failed to query job status.") from exc
+        raise_api_error(500, "status.query_failed")
 
     rows = result.data or []
     if not rows:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found for this tenant.",
+        raise_api_error(
+            status.HTTP_404_NOT_FOUND,
+            "status.job_not_found",
+            detail={"job_id": str(job_id)},
         )
     row = rows[0]
-    return JobStatusResponse(
+    return build_response(
+        JobStatusResponse,
+        "status.fetched",
         job_id=UUID(row["id"]),
         status=row["status"],
         file_name=row["file_name"],

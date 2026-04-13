@@ -3,11 +3,15 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
-from app.api import health, ingest, prompts, query, query_stream, status
+from app.api import auth, health, ingest, prompts, query, query_stream, status
 from app.config import get_settings
+from app.utils.api_errors import error_payload
 from app.utils.logger import configure_logging, get_logger
+from app.utils.messages import get_message
 
 
 @asynccontextmanager
@@ -32,6 +36,32 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         lifespan=lifespan,
     )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
+        if isinstance(exc.detail, dict) and "message" in exc.detail:
+            payload = exc.detail
+        else:
+            payload = {"message": str(exc.detail)}
+        return JSONResponse(status_code=exc.status_code, content=payload, headers=exc.headers)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content=error_payload("common.validation_failed", detail=exc.errors()),
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(_request: Request, _exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content=error_payload("common.internal_error", detail=get_message("common.internal_error")),
+        )
+
+    app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(ingest.router)
     app.include_router(status.router)

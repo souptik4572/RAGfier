@@ -169,6 +169,7 @@ def test_query_returns_answer_and_resolved_citations(client: TestClient) -> None
     )
     assert response.status_code == 200, response.text
     body = response.json()
+    assert body["message"] == "Query completed successfully"
     assert body["query"] == "What is the liability cap?"
     assert body["answer"].startswith("The liability cap is $1,000,000")
     assert body["declined"] is False
@@ -196,6 +197,7 @@ def test_query_declines_when_retrieval_empty(monkeypatch, client: TestClient) ->
     )
     assert response.status_code == 200
     body = response.json()
+    assert body["message"] == "Query declined due to insufficient context"
     assert body["declined"] is True
     assert body["answer"].startswith("I don't have enough information")
     assert body["citations"] == []
@@ -232,6 +234,7 @@ def test_query_falls_back_to_dense_when_hybrid_rpc_missing(client: TestClient) -
     )
     assert response.status_code == 200, response.text
     body = response.json()
+    assert body["message"] == "Query completed successfully"
     assert body["declined"] is False
     assert body["answer"].startswith("The liability cap")
     assert body["retrieval_metadata"]["dense_results"] >= 1
@@ -262,6 +265,7 @@ def test_query_stream_emits_sources_then_tokens_then_done(client: TestClient) ->
     assert event_types[-1] == "done"
 
     sources_data = json.loads(events[0][1])
+    assert sources_data["message"] == "Sources prepared successfully"
     assert len(sources_data["citations"]) == 2
 
     token_texts = [data for ev, data in events if ev == "token"]
@@ -269,6 +273,7 @@ def test_query_stream_emits_sources_then_tokens_then_done(client: TestClient) ->
     assert any("cap" in t for t in token_texts)
 
     done_payload = json.loads(events[-1][1])
+    assert done_payload["message"] == "Query stream completed successfully"
     assert done_payload["declined"] is False
     assert "retrieval_metadata" in done_payload
 
@@ -287,8 +292,11 @@ def test_prompts_list_and_create_roundtrip(client: TestClient) -> None:
     created = create_resp.json()
     assert created["name"] == "rag_generation_v1"
     assert created["is_active"] is True
+    assert created["message"] == "Prompt created successfully"
 
     list_resp = client.get("/prompts")
     assert list_resp.status_code == 200
-    prompts = list_resp.json()["prompts"]
+    list_body = list_resp.json()
+    assert list_body["message"] == "Prompts retrieved successfully"
+    prompts = list_body["prompts"]
     assert any(p["name"] == "rag_generation_v1" for p in prompts)

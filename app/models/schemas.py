@@ -17,6 +17,7 @@ class IngestResponse(BaseModel):
 
 
 class JobStatusResponse(BaseModel):
+    message: str
     job_id: UUID
     status: JobStatus
     file_name: str
@@ -61,6 +62,7 @@ class QueryResult(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    message: str
     query: str
     results: List[QueryResult]
 
@@ -97,6 +99,7 @@ class RetrievalMetadata(BaseModel):
 
 
 class HybridQueryResponse(BaseModel):
+    message: str
     query: str
     answer: str
     citations: List[Citation] = Field(default_factory=list)
@@ -112,7 +115,31 @@ class PromptCreateRequest(BaseModel):
     global_: bool = Field(default=False, alias="global")
 
 
+class TenantSignupRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=8)
+    tenant_name: str = Field(..., min_length=1)
+    tenant_slug: Optional[str] = Field(default=None, min_length=1)
+
+
+class TenantLoginRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=8)
+
+
+class AuthTokenResponse(BaseModel):
+    message: str = ""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: Optional[int] = None
+    refresh_token: Optional[str] = None
+    tenant_id: UUID
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+
+
 class PromptSummary(BaseModel):
+    message: str = ""
     id: UUID
     name: str
     version: int
@@ -123,10 +150,12 @@ class PromptSummary(BaseModel):
 
 
 class PromptListResponse(BaseModel):
+    message: str
     prompts: List[PromptSummary]
 
 
 class HealthResponse(BaseModel):
+    message: str
     status: str
     version: str
     supabase: str

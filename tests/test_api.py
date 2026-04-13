@@ -56,6 +56,7 @@ def test_health(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "healthy"
+    assert body["message"] == "Health status retrieved successfully"
     assert "version" in body
 
 
@@ -65,6 +66,9 @@ def test_ingest_rejects_unsupported_type(client: TestClient) -> None:
         files={"file": ("x.txt", b"hello", "text/plain")},
     )
     assert response.status_code == 422
+    body = response.json()
+    assert body["message"] == "Unsupported file type."
+    assert body["detail"]["file_type"] == "txt"
 
 
 def test_ingest_creates_job(client: TestClient, fake_db: FakeSupabaseClient) -> None:
@@ -76,6 +80,7 @@ def test_ingest_creates_job(client: TestClient, fake_db: FakeSupabaseClient) -> 
     assert response.status_code == 202
     body = response.json()
     assert body["status"] == "pending"
+    assert body["message"] == "Ingestion pipeline started"
     job_id = body["job_id"]
     assert len(fake_db.rows("ingestion_jobs")) == 1
     job = fake_db.rows("ingestion_jobs")[0]
@@ -103,6 +108,7 @@ def test_status_returns_job(client: TestClient, fake_db: FakeSupabaseClient) -> 
     response = client.get(f"/status/{job_id}")
     assert response.status_code == 200
     body = response.json()
+    assert body["message"] == "Job status retrieved successfully"
     assert body["status"] == "completed"
     assert body["total_chunks"] == 3
     assert body["processed_chunks"] == 3
@@ -127,6 +133,9 @@ def test_status_404_for_other_tenant(
     ).execute()
     response = client.get(f"/status/{job_id}")
     assert response.status_code == 404
+    body = response.json()
+    assert body["message"] == "Job not found for this tenant."
+    assert body["detail"]["job_id"] == job_id
 
 
 # The /query endpoint is exercised end-to-end in tests/test_query_pipeline.py

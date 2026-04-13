@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.config import get_settings
 from app.models.database import get_service_client
 from app.models.schemas import HealthResponse
+from app.utils.api_errors import build_response
 
 router = APIRouter(tags=["health"])
 
@@ -24,7 +25,9 @@ async def health() -> HealthResponse:
     openai_status = "configured" if settings.openai_api_key else "not_configured"
     cohere_status = "configured" if settings.cohere_api_key else "not_configured"
 
-    return HealthResponse(
+    return build_response(
+        HealthResponse,
+        "health.fetched",
         status="healthy",
         version=settings.app_version,
         supabase=supabase_status,

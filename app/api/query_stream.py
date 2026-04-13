@@ -18,6 +18,7 @@ from app.pipeline.query_pipeline import (
     prepare_query,
     stamp_total_latency,
 )
+from app.utils.api_errors import raise_api_error, success_payload
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,7 +43,7 @@ async def query_stream(
         )
     except QueryPipelineError as exc:
         logger.error("query_stream.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
 
     async def event_generator() -> AsyncIterator[dict]:
         # Emit sources first so the client can pre-render citation cards.
@@ -54,7 +55,10 @@ async def query_stream(
         yield {
             "event": "sources",
             "data": json.dumps(
-                {"citations": [c.model_dump(mode="json") for c in upfront_citations]}
+                success_payload(
+                    "query.sources_prepared",
+                    citations=[c.model_dump(mode="json") for c in upfront_citations],
+                )
             ),
         }
 
@@ -64,10 +68,11 @@ async def query_stream(
             yield {
                 "event": "done",
                 "data": json.dumps(
-                    {
-                        "retrieval_metadata": prepared.retrieval_metadata.model_dump(mode="json"),
-                        "declined": True,
-                    }
+                    success_payload(
+                        "query.stream_declined",
+                        retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
+                        declined=True,
+                    )
                 ),
             }
             return
@@ -87,7 +92,15 @@ async def query_stream(
                 tenant_id=auth.tenant_id,
                 error=str(exc),
             )
-            yield {"event": "error", "data": json.dumps({"message": str(exc)})}
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    success_payload(
+                        "query.stream_generation_failed",
+                        detail=str(exc),
+                    )
+                ),
+            }
             return
 
         prepared.retrieval_metadata.latency_ms.generation = int(
@@ -97,10 +110,11 @@ async def query_stream(
         yield {
             "event": "done",
             "data": json.dumps(
-                {
-                    "retrieval_metadata": prepared.retrieval_metadata.model_dump(mode="json"),
-                    "declined": False,
-                }
+                success_payload(
+                    "query.stream_completed",
+                    retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
+                    declined=False,
+                )
             ),
         }
 

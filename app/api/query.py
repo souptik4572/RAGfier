@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 
 from app.api.auth import AuthContext, get_auth_context
 from app.models.database import get_service_client
@@ -15,6 +15,7 @@ from app.pipeline.query_pipeline import (
     prepare_query,
     stamp_total_latency,
 )
+from app.utils.api_errors import build_response, raise_api_error
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,7 +40,7 @@ async def query_documents(
         )
     except QueryPipelineError as exc:
         logger.error("query.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
 
     if prepared.declined:
         stamp_total_latency(prepared)
@@ -48,7 +49,9 @@ async def query_documents(
             tenant_id=auth.tenant_id,
             reason=prepared.decline_reason,
         )
-        return HybridQueryResponse(
+        return build_response(
+            HybridQueryResponse,
+            "query.declined",
             query=payload.query,
             answer=INSUFFICIENT_CONTEXT_MESSAGE,
             citations=[],
@@ -66,7 +69,7 @@ async def query_documents(
         )
     except GenerationError as exc:
         logger.error("query.generation_failed", tenant_id=auth.tenant_id, error=str(exc))
-        raise HTTPException(status_code=500, detail="Generation failed.") from exc
+        raise_api_error(500, "query.generation_failed")
 
     prepared.retrieval_metadata.latency_ms.generation = int(
         (time.perf_counter() - gen_start) * 1000
@@ -86,7 +89,9 @@ async def query_documents(
         cited=len(citations),
         total_ms=prepared.retrieval_metadata.latency_ms.total,
     )
-    return HybridQueryResponse(
+    return build_response(
+        HybridQueryResponse,
+        "query.completed",
         query=payload.query,
         answer=answer,
         citations=citations,

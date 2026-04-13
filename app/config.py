@@ -90,6 +90,7 @@ class Settings(BaseSettings):
         default="rag_generation_v1", alias="DEFAULT_PROMPT_NAME"
     )
     prompts_dir: str = Field(default="prompts", alias="PROMPTS_DIR")
+    messages_file: str = Field(default="config/messages.json", alias="MESSAGES_FILE")
 
     @field_validator("allowed_file_types", mode="before")
     @classmethod
