@@ -51,5 +51,13 @@
     "list_failed": "Failed to list prompts.",
     "create_failed": "Failed to create prompt.",
     "insert_empty": "Prompt insert returned no row."
+  },
+  "eval": {
+    "run_accepted": "Evaluation pipeline started",
+    "runs_listed": "Evaluation runs retrieved successfully",
+    "samples_listed": "Evaluation samples retrieved successfully",
+    "dataset_not_found": "Evaluation dataset not found.",
+    "run_not_found": "Evaluation run not found.",
+    "run_forbidden": "Evaluation run does not belong to this tenant."
   }
 }

@@ -1,608 +1,882 @@
-# SPEC.md — Phase 2: Hybrid Retrieval, Reranking, and Citation-Enforced Generation
+# SPEC.md — Phase 3: Automated Evaluation Pipeline, Golden Dataset, and CI-Gated Quality Thresholds
 
 ---
 
 ## 1. Executive Summary
 
-Phase 2 graduates the RAG system from a basic vector-similarity retrieval prototype into a production-quality query pipeline. The objective is to dramatically improve retrieval precision and introduce grounded, citation-enforced LLM response generation.
+Phase 3 transforms the RAG system from a manually-tested pipeline into a measurably reliable, continuously validated production system. The objective is to establish an automated evaluation framework that quantifies retrieval and generation quality, catches regressions before they reach users, and provides the metrics infrastructure needed to confidently iterate on the pipeline.
 
-Phase 1 established the ingestion backbone: documents are parsed, chunked, embedded, and stored in Supabase pgvector with full spatial metadata. Phase 2 now builds the **query-time intelligence** — the logic that turns a user's natural language question into a precise, cited, and hallucination-resistant answer.
+Phase 1 built the ingestion backbone. Phase 2 graduated retrieval and generation to production quality with hybrid search, reranking, and citation enforcement. Phase 3 now answers the question every production AI system must address: **"How do we know it's still working correctly?"**
 
-### Phase 2 Scope
+### Phase 3 Scope
 
-- Hybrid retrieval combining dense (vector) and sparse (BM25) search
-- Reciprocal Rank Fusion (RRF) to merge ranked result sets
-- Cross-encoder reranking for precision refinement
-- Citation-enforced LLM response generation
-- Hallucination guardrails (explicit decline when context is insufficient)
-- Versioned prompt management
-- Extended `/query` endpoint with generation and citations
+- Golden dataset creation (manual curation + synthetic augmentation)
+- Ragas evaluation pipeline for RAG-specific metrics (Faithfulness, Answer Relevancy, Context Precision, Context Recall)
+- DeepEval integration for pytest-compatible CI/CD quality gates
+- GitHub Actions workflow that blocks merges on quality regression
+- Evaluation results storage and historical tracking
+- Per-tenant evaluation support (evaluate against tenant-specific corpora)
+- Citation coverage metric (custom: percentage of claims with citation anchors)
 
-### Out of Scope (Deferred to Later Phases)
+### Out of Scope (Deferred to Phase 4)
 
-- Automated evaluation pipeline (Ragas, golden dataset) → Phase 3
-- CI-gated quality thresholds → Phase 3
 - AI SDK / Chat widget / Frontend delivery → Phase 4
 - PDF viewer with bounding box overlays → Phase 4
 - Multi-deployment architecture (API, widget, iframe) → Phase 4
+- Production monitoring / online evaluation → Phase 4+
+- A/B testing framework → Phase 4+
 
 ---
 
 ## 2. Architectural Goals
 
-1. **Maximize Retrieval Precision**: Combine semantic understanding (vector search) with keyword exactness (BM25) so the system handles both conceptual queries and exact-match lookups (e.g., drug codes, clause numbers, part IDs).
-2. **Minimize Irrelevant Context in LLM Prompt**: Use cross-encoder reranking to filter out noise before generation, reducing hallucination risk and improving response quality.
-3. **Enforce Grounded Citations**: Every claim in the generated response must map back to a specific chunk, page number, and source document. No unsupported claims.
-4. **Fail Gracefully on Missing Context**: If the retrieved chunks do not contain the answer, the system explicitly declines rather than hallucinating.
-5. **Maintain Multi-Tenant Isolation**: All retrieval and generation operations remain scoped by `tenant_id` via RLS.
-6. **Keep Prompt Logic Auditable**: Store generation prompts as versioned configuration, not hardcoded strings.
+1. **Quantify Pipeline Quality Mathematically**: Replace anecdotal "it looks good" testing with numerical scores across faithfulness, relevancy, context precision, and context recall.
+2. **Prevent Silent Degradation**: Any change to ingestion logic, chunking parameters, retrieval weights, prompt templates, or model selection triggers an evaluation run. Regressions are caught before merge.
+3. **Separate Retrieval and Generation Failures**: Use component-level metrics to diagnose whether a bad answer is caused by poor retrieval (wrong chunks surfaced) or poor generation (LLM misused good chunks).
+4. **Maintain Evaluation Dataset Quality**: The golden dataset is versioned, reviewed, and expanded over time. Synthetic generation supplements manual curation but never replaces human verification.
+5. **Keep Evaluation Costs Predictable**: LLM-as-judge calls are the primary cost driver. Use `gpt-4o-mini` for evaluation where possible; reserve `gpt-4o` for faithfulness scoring where accuracy is critical.
+6. **Build for Multi-Tenant Evaluation**: Support running evaluation suites against specific tenant corpora to validate per-domain performance.
 
 ---
 
-## 3. Prerequisites from Phase 1
+## 3. Prerequisites from Phase 2
 
-Phase 2 assumes the following Phase 1 deliverables are operational:
+Phase 3 assumes the following Phase 2 deliverables are operational:
 
-| Component                        | Status   | Notes                                                        |
-|----------------------------------|----------|--------------------------------------------------------------|
-| Ingestion pipeline               | Complete | PDF → parse → chunk → embed → Supabase upsert               |
-| `documents` table with pgvector  | Complete | HNSW index on `embedding`, RLS active                        |
-| `ingestion_jobs` table           | Complete | Status tracking with tenant isolation                        |
-| `tenants` table                  | Complete | Multi-tenant registry                                        |
-| `match_documents()` function     | Complete | Basic cosine similarity retrieval (will be extended)         |
-| `/ingest` endpoint               | Complete | File upload + async pipeline trigger                         |
-| `/status/{job_id}` endpoint      | Complete | Job progress polling                                         |
-| `/query` endpoint                | Complete | Basic vector search (will be replaced by hybrid pipeline)    |
-| Metadata schema                  | Complete | page_number, bounding_boxes, section_heading, source, etc.   |
+| Component                                | Status   | Notes                                                              |
+|------------------------------------------|----------|--------------------------------------------------------------------|
+| Hybrid retrieval (`match_documents_hybrid`) | Complete | Dense + Sparse + RRF fusion working                               |
+| Cross-encoder reranking                  | Complete | Cohere rerank with local fallback                                  |
+| Citation-enforced generation             | Complete | `[SOURCE_N]` anchors in LLM responses                             |
+| Hallucination guardrails                 | Complete | Relevance threshold + prompt-based decline                         |
+| Updated `/query` endpoint               | Complete | Full pipeline: embed → retrieve → rerank → generate → cite        |
+| Streaming `/query/stream` endpoint       | Complete | SSE streaming with pre-sent sources                                |
+| Prompt management (`/prompts`)           | Complete | Versioned prompts in DB + YAML fallback                            |
+| Per-step latency tracking                | Complete | Response metadata includes latency breakdown                       |
+| `fts` tsvector column + GIN index        | Complete | Sparse search operational                                          |
+| `prompt_versions` table                  | Complete | Audit trail for prompt changes                                     |
 
 ---
 
-## 4. Tech Stack Additions (Phase 2)
+## 4. Tech Stack Additions (Phase 3)
 
-### 4.1 Retrieval Layer
+### 4.1 Evaluation Frameworks
 
-| Component          | Technology                          | Rationale                                                      |
-|--------------------|-------------------------------------|----------------------------------------------------------------|
-| Sparse Search      | PostgreSQL `tsvector` + `ts_rank`   | Native full-text search in Supabase; no external dependency    |
-| Rank Fusion        | Custom RRF implementation           | Merges dense + sparse ranked lists into unified candidate set  |
+| Component          | Technology              | Rationale                                                          |
+|--------------------|-------------------------|--------------------------------------------------------------------|
+| RAG Metrics        | Ragas `>=0.4.0`         | Industry standard for faithfulness, relevancy, context precision/recall; reference-free evaluation |
+| CI Test Runner     | DeepEval `>=1.0.0`      | Pytest-compatible; pass/fail thresholds; designed for CI/CD gates   |
+| Synthetic Data     | Ragas TestsetGenerator  | Knowledge-graph-based test generation from ingested documents       |
 
-### 4.2 Reranking Layer
+### 4.2 CI/CD
 
-| Component          | Technology                                      | Rationale                                                    |
-|--------------------|-------------------------------------------------|--------------------------------------------------------------|
-| Cross-Encoder      | Cohere Rerank API (`rerank-english-v3.0`)       | High accuracy; managed API avoids GPU provisioning           |
-| Fallback           | `cross-encoder/ms-marco-MiniLM-L-6-v2` (local) | Open-source fallback for self-hosted or cost-sensitive deployments |
+| Component          | Technology              | Rationale                                                          |
+|--------------------|-------------------------|--------------------------------------------------------------------|
+| CI Pipeline        | GitHub Actions           | Standard; integrates with pytest and DeepEval CLI                  |
+| Test Framework     | pytest `>=7.0`           | DeepEval's native integration layer                                |
 
-### 4.3 Generation Layer
+### 4.3 Storage & Tracking
 
-| Component          | Technology                     | Rationale                                                    |
-|--------------------|--------------------------------|--------------------------------------------------------------|
-| LLM                | OpenAI `gpt-4o` / `gpt-4o-mini` | Strong instruction-following for citation enforcement       |
-| Prompt Management  | YAML config files              | Versioned, auditable, no-redeploy prompt updates             |
-| Streaming          | Server-Sent Events (SSE)       | Token-by-token delivery for responsive UX                    |
+| Component          | Technology              | Rationale                                                          |
+|--------------------|-------------------------|--------------------------------------------------------------------|
+| Eval Results DB    | Supabase PostgreSQL      | Same DB as the rest of the stack; relational storage for eval history |
+| Dataset Storage    | JSON files (versioned)   | Golden datasets stored in repo; versioned with git                 |
 
 ### 4.4 New Dependencies
 
 ```
-cohere>=5.0.0              # Rerank API
-sentence-transformers>=2.2.0  # Local cross-encoder fallback
-pyyaml>=6.0                # Prompt template management
-tiktoken>=0.5.0            # Token counting for context window management
-sse-starlette>=1.6.0       # SSE streaming for FastAPI
+ragas>=0.4.0                    # RAG evaluation metrics + synthetic test generation
+deepeval>=1.0.0                 # Pytest-compatible CI/CD evaluation framework
+pandas>=2.0.0                   # Dataset manipulation and analysis
+datasets>=2.14.0                # HuggingFace datasets for Ragas compatibility
+nest-asyncio>=1.5.0             # Async support in notebook/CI environments
 ```
----
-
-## 5. System Architecture (Phase 2 Query Pipeline)
-
-### 5.1 High-Level Query Flow
-
-```
-┌──────────────────┐
-│   User Query      │
-│   (natural lang)  │
-└──────┬───────────┘
-│
-▼
-┌──────────────────┐
-│  Query Embedding  │  ← OpenAI text-embedding-3-small
-│                   │     (same model as ingestion)
-└──────┬───────────┘
-│
-▼
-┌──────────────────────────────────────────┐
-│         Parallel Retrieval               │
-│                                          │
-│  ┌─────────────┐    ┌─────────────────┐  │
-│  │ Dense Search │    │ Sparse Search   │  │
-│  │ (pgvector    │    │ (tsvector +     │  │
-│  │  cosine sim) │    │  ts_rank/BM25)  │  │
-│  └──────┬──────┘    └──────┬──────────┘  │
-│         │                  │             │
-│         └──────┬───────────┘             │
-│                ▼                         │
-│  ┌─────────────────────────┐             │
-│  │  Reciprocal Rank Fusion │             │
-│  │  (RRF Merge)            │             │
-│  └──────────┬──────────────┘             │
-└─────────────┼────────────────────────────┘
-│
-▼
-┌──────────────────┐
-│  Cross-Encoder   │  ← Cohere Rerank or local cross-encoder
-│  Reranking       │     Rescores top-N candidates → top-K
-└──────┬───────────┘
-│
-▼
-┌──────────────────┐
-│  Context Assembly │  ← Build citation-aware prompt
-│  + Prompt Build   │     Inject top-K chunks with [source_id] tags
-└──────┬───────────┘
-│
-▼
-┌──────────────────┐
-│  LLM Generation  │  ← GPT-4o with citation enforcement prompt
-│  (with citations)│     Streaming via SSE
-└──────┬───────────┘
-│
-▼
-┌──────────────────┐
-│  Response with   │  ← Each claim tagged with chunk ID
-│  Citation Anchors│     Metadata (page, bbox, source) included
-└──────────────────┘
-```
-### 5.2 Retrieval Parameter Summary
-
-| Parameter                  | Value     | Rationale                                                          |
-|----------------------------|-----------|---------------------------------------------------------------------|
-| Dense retrieval top-N      | 20        | Cast wide net for semantic matches                                  |
-| Sparse retrieval top-N     | 20        | Cast wide net for keyword matches                                   |
-| RRF constant `k`           | 60        | Standard value; prevents top-rank dominance                         |
-| Post-RRF candidate pool    | ~20-30    | Deduplicated union of dense + sparse results                        |
-| Reranker input             | Top 20    | Cross-encoder processes the top 20 RRF candidates                   |
-| Final top-K to LLM         | 5         | Balances context richness vs. noise; configurable per tenant        |
 
 ---
 
-## 6. Database Schema Extensions
+## 5. System Architecture (Phase 3 Evaluation Pipeline)
 
-### 6.1 Full-Text Search Column
+### 5.1 High-Level Evaluation Flow
 
-Add a `tsvector` column to the existing `documents` table and a GIN index for BM25-style sparse retrieval:
+```
+┌────────────────────────────────────────────────────┐
+│              Evaluation Trigger                      │
+│  (Manual CLI / GitHub Actions on PR / Scheduled)     │
+└──────────┬───────────────────────────────────────────┘
+│
+▼
+┌──────────────────────┐
+│  Load Golden Dataset  │  ← JSON file from eval/datasets/
+│  (versioned, curated) │     Contains: query, reference_answer,
+│                       │     reference_contexts, source_doc
+└──────────┬───────────┘
+│
+▼
+┌──────────────────────┐
+│  Run RAG Pipeline     │  ← For each golden question:
+│  (Phase 2 /query)     │     1. Embed query
+│                       │     2. Hybrid retrieve
+│                       │     3. Rerank
+│                       │     4. Generate with citations
+└──────────┬───────────┘
+│
+▼
+┌──────────────────────┐
+│  Collect Samples      │  ← For each question, capture:
+│                       │     - user_input (query)
+│                       │     - response (generated answer)
+│                       │     - retrieved_contexts (chunk texts)
+│                       │     - reference (ground truth answer)
+└──────────┬───────────┘
+│
+▼
+┌──────────────────────────────────────────────┐
+│            Metric Computation                 │
+│                                               │
+│  ┌──────────────┐  ┌───────────────────────┐  │
+│  │  Ragas Core   │  │  Custom Metrics        │  │
+│  │  - Faithfulness│  │  - Citation Coverage   │  │
+│  │  - Answer Rel. │  │  - Decline Accuracy    │  │
+│  │  - Ctx Precision│ │  - Latency Compliance  │  │
+│  │  - Ctx Recall  │  │                       │  │
+│  └──────┬───────┘  └──────────┬────────────┘  │
+│         └──────────┬──────────┘               │
+└────────────────────┼──────────────────────────┘
+│
+▼
+┌──────────────────────┐
+│  Threshold Check      │  ← Compare scores against minimums
+│  (Pass / Fail)        │     Fail → Block merge in CI
+└──────────┬───────────┘
+│
+▼
+┌──────────────────────────────────────────────┐
+│            Results Handling                    │
+│                                               │
+│  ┌──────────────┐  ┌───────────────────────┐  │
+│  │  Store in DB   │  │  Generate Report     │  │
+│  │  (eval_runs    │  │  (JSON + Markdown    │  │
+│  │   table)       │  │   summary)           │  │
+│  └──────────────┘  └───────────────────────┘  │
+└───────────────────────────────────────────────┘
+```
+### 5.2 Evaluation Modes
 
-```sql
--- =============================================================
--- Phase 2: Add full-text search support to documents table
--- =============================================================
+| Mode               | Trigger                          | Use Case                                                    |
+|--------------------|----------------------------------|-------------------------------------------------------------|
+| **CI Gate**        | GitHub Actions on PR             | Block merges when quality drops below thresholds            |
+| **Manual Run**     | CLI command                      | Developer runs evaluation locally before pushing            |
+| **Scheduled**      | Cron (weekly / daily)            | Detect drift from external changes (model updates, etc.)    |
+| **Per-Tenant**     | API endpoint or CLI flag         | Validate quality for a specific tenant's corpus             |
 
--- Add tsvector column for sparse retrieval
-ALTER TABLE documents
-  ADD COLUMN fts tsvector
-  GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+---
 
--- GIN index for fast full-text search
-CREATE INDEX idx_documents_fts
-  ON documents
-  USING gin (fts);
+## 6. Golden Dataset Specification
+
+### 6.1 Dataset Structure
+
+The golden dataset is a JSON file containing curated question-answer pairs with verified source grounding. Each entry represents a single evaluation scenario.
+
+**Schema** (`eval/datasets/golden_v1.json`):
+
+```json
+{
+  "version": "1.0.0",
+  "created_at": "2026-04-14T00:00:00Z",
+  "description": "Phase 3 golden dataset — domain-specific RAG evaluation",
+  "tenant_id": "uuid-of-target-tenant",
+  "samples": [
+    {
+      "id": "gs-001",
+      "category": "exact_match",
+      "difficulty": "easy",
+      "user_input": "What is the liability cap in the Master Services Agreement?",
+      "reference": "The liability cap shall not exceed $1,000,000 in aggregate for all claims arising under the agreement. This limitation applies to both direct and indirect damages.",
+      "reference_contexts": [
+        "The liability cap shall not exceed $1,000,000 in aggregate for all claims arising under this agreement. This limitation applies to both direct and indirect damages..."
+      ],
+      "source_document": "contract.pdf",
+      "source_page": 5,
+      "tags": ["legal", "liability", "exact_value"]
+    },
+    {
+      "id": "gs-002",
+      "category": "unanswerable",
+      "difficulty": "hard",
+      "user_input": "What is the CEO's favourite colour?",
+      "reference": "DECLINE: This information is not present in the available documents.",
+      "reference_contexts": [],
+      "source_document": null,
+      "source_page": null,
+      "tags": ["unanswerable", "hallucination_test"]
+    },
+    {
+      "id": "gs-003",
+      "category": "multi_context",
+      "difficulty": "medium",
+      "user_input": "How do the termination clauses differ between the MSA and the NDA?",
+      "reference": "The MSA allows termination with 30 days written notice, while the NDA requires 60 days notice and mutual consent...",
+      "reference_contexts": [
+        "Either party may terminate this MSA with 30 days written notice...",
+        "Termination of this NDA requires 60 days notice and written mutual consent..."
+      ],
+      "source_document": "multiple",
+      "source_page": null,
+      "tags": ["multi_document", "comparison", "legal"]
+    }
+  ]
+}
 ```
 
-### 6.2 Prompt Versions Table
+### 6.2 Dataset Categories
+
+Every golden dataset should include samples across these categories to ensure comprehensive coverage:
+
+| Category           | Description                                                      | Target % | Min Samples |
+|--------------------|------------------------------------------------------------------|----------|-------------|
+| `exact_match`      | Questions with precise, factual answers (numbers, names, dates)  | 30%      | 15          |
+| `conceptual`       | Questions requiring synthesis of a concept from context          | 25%      | 12          |
+| `multi_context`    | Questions requiring information from multiple chunks/documents   | 15%      | 8           |
+| `unanswerable`     | Questions where the answer is NOT in the knowledge base          | 15%      | 8           |
+| `reasoning`        | Questions requiring inference or logical deduction from context  | 10%      | 5           |
+| `adversarial`      | Prompt injection attempts, edge cases, ambiguous queries         | 5%       | 3           |
+
+**Minimum viable golden dataset: 50 samples. Target: 100-200 samples.**
+
+### 6.3 Dataset Creation Workflow
+
+**Step 1: Manual Curation (Primary — 60% of dataset)**
+
+Domain experts review ingested documents and create question-answer pairs:
+
+1. Select a representative document from the tenant's corpus.
+2. Read a section and formulate a question a real user would ask.
+3. Write the reference answer based solely on the document content.
+4. Copy the exact context passage(s) that support the answer.
+5. Record the source document and page number.
+6. Assign a category and difficulty level.
+7. Include unanswerable questions (answers NOT in the documents).
+
+**Step 2: Synthetic Augmentation (Secondary — 40% of dataset)**
+
+Use Ragas' `TestsetGenerator` to generate additional samples from the ingested documents, then **human-review every synthetic sample** before including it in the golden dataset.
+
+```python
+from ragas.testset import TestsetGenerator
+from ragas.testset.graph import KnowledgeGraph, Node, NodeType
+from ragas.testset.transforms import default_transforms, apply_transforms
+from ragas.testset.synthesizers import default_query_distribution
+from ragas.llms import llm_factory
+from openai import OpenAI
+
+# Initialize LLM and embeddings for generation
+client = OpenAI()
+generator_llm = llm_factory("gpt-4o", client=client)
+
+# Build knowledge graph from ingested chunks
+kg = KnowledgeGraph()
+for chunk in ingested_chunks:
+    kg.nodes.append(
+        Node(
+            type=NodeType.DOCUMENT,
+            properties={
+                "page_content": chunk["content"],
+                "document_metadata": chunk["metadata"],
+            }
+        )
+    )
+
+# Enrich the knowledge graph with transformations
+trans = default_transforms(
+    documents=docs,
+    llm=generator_llm,
+    embedding_model=generator_embeddings
+)
+apply_transforms(kg, trans)
+
+# Save knowledge graph for reuse
+kg.save("eval/knowledge_graph.json")
+
+# Generate synthetic test set
+generator = TestsetGenerator(
+    llm=generator_llm,
+    embedding_model=generator_embeddings,
+    knowledge_graph=kg
+)
+
+query_distribution = default_query_distribution(generator_llm)
+# Default: 50% specific, 25% abstract, 25% comparative
+
+testset = generator.generate(testset_size=50, query_distribution=query_distribution)
+
+# Export for human review
+df = testset.to_pandas()
+df.to_json("eval/datasets/synthetic_for_review.json", orient="records", indent=2)
+```
+
+**Step 3: Human Review of Synthetic Samples**
+
+Every synthetic sample must be reviewed before inclusion:
+
+- Verify the reference answer is factually correct against the source.
+- Confirm the reference_contexts actually support the answer.
+- Discard samples with fabricated or hallucinated content.
+- Assign appropriate category and difficulty labels.
+- Expect to discard 20-40% of synthetic samples.
+
+### 6.4 Dataset Versioning
+
+Golden datasets are versioned using semantic versioning and stored in the repository:
+
+```
+eval/
+├── datasets/
+│   ├── golden_v1.0.0.json       # Initial curated dataset
+│   ├── golden_v1.1.0.json       # Added 20 synthetic samples (reviewed)
+│   ├── golden_v1.2.0.json       # Added adversarial edge cases
+│   └── CHANGELOG.md             # Documents all dataset changes
+```
+
+**Version bumping rules**:
+- **Patch** (1.0.x): Fix incorrect reference answers or metadata.
+- **Minor** (1.x.0): Add new samples without removing existing ones.
+- **Major** (x.0.0): Restructure categories, remove samples, or change schema.
+
+**Critical**: Never compare evaluation scores across different dataset versions. If the dataset changes, previous scores are invalidated. Always record the dataset version alongside evaluation results.
+
+---
+
+## 7. Evaluation Metrics — Detailed Specification
+
+### 7.1 Core RAG Metrics (via Ragas)
+
+| Metric               | What It Measures                                              | Required Inputs                       | Score Range | Phase 3 Threshold |
+|----------------------|---------------------------------------------------------------|---------------------------------------|-------------|-------------------|
+| **Faithfulness**      | Are claims in the answer supported by retrieved context?      | `response`, `retrieved_contexts`      | 0.0 - 1.0   | ≥ 0.85            |
+| **Answer Relevancy**  | Does the answer actually address the user's question?         | `user_input`, `response`              | 0.0 - 1.0   | ≥ 0.80            |
+| **Context Precision** | Are the top-ranked retrieved chunks actually relevant?        | `user_input`, `retrieved_contexts`, `reference` | 0.0 - 1.0 | ≥ 0.75  |
+| **Context Recall**    | Was all relevant information from the KB retrieved?           | `retrieved_contexts`, `reference`     | 0.0 - 1.0   | ≥ 0.75            |
+
+**How each metric works**:
+
+**Faithfulness**: The LLM judge extracts individual claims from the generated answer, then checks whether each claim is entailed by the retrieved context. The score is the ratio of supported claims to total claims. This is the primary hallucination defense metric.
+
+**Answer Relevancy**: The LLM judge generates N hypothetical questions that the answer would address, then measures cosine similarity between these questions and the original query. A high score means the answer is on-topic.
+
+**Context Precision**: Measures whether the retrieved chunks that are relevant to answering the question are ranked higher than irrelevant ones. High precision means the reranker is doing its job well.
+
+**Context Recall**: Checks whether the retrieved context contains all the information needed to produce the reference answer. Low recall indicates the retrieval stage is missing relevant chunks.
+
+### 7.2 Custom Metrics
+
+| Metric                 | What It Measures                                          | Score Range | Threshold |
+|------------------------|-----------------------------------------------------------|-------------|-----------|
+| **Citation Coverage**   | % of factual claims with `[SOURCE_N]` citation anchors    | 0.0 - 1.0  | ≥ 0.90    |
+| **Decline Accuracy**    | Does the system decline when it should (unanswerable Qs)? | 0.0 - 1.0  | ≥ 0.80    |
+| **Latency Compliance**  | % of queries completing within 5s total latency           | 0.0 - 1.0  | ≥ 0.90    |
+
+**Citation Coverage Implementation**:
+
+```python
+import re
+
+def citation_coverage_score(response: str, num_claims: int | None = None) -> float:
+    """
+    Measure the proportion of the response that includes citation anchors.
+    
+    Simple heuristic: count sentences with citations vs. total factual sentences.
+    """
+    sentences = [s.strip() for s in re.split(r'[.!?]+', response) if s.strip()]
+    if not sentences:
+        return 0.0
+    
+    # Filter to factual sentences (exclude meta-statements, greetings, etc.)
+    factual_sentences = [
+        s for s in sentences 
+        if len(s.split()) > 5  # Heuristic: factual sentences tend to be longer
+        and not s.lower().startswith(("i don't have", "the following sources"))
+    ]
+    
+    if not factual_sentences:
+        return 1.0  # No factual claims = nothing to cite (e.g., decline responses)
+    
+    cited_sentences = [
+        s for s in factual_sentences 
+        if re.search(r'\[SOURCE_\d+\]', s)
+    ]
+    
+    return len(cited_sentences) / len(factual_sentences)
+```
+
+**Decline Accuracy Implementation**:
+
+```python
+def decline_accuracy_score(
+    response: str,
+    is_unanswerable: bool
+) -> float:
+    """
+    Check if the system correctly declines unanswerable questions
+    and correctly answers answerable ones.
+    """
+    decline_phrases = [
+        "i don't have enough information",
+        "not present in the available documents",
+        "cannot find",
+        "no relevant documents",
+    ]
+    
+    response_is_decline = any(
+        phrase in response.lower() for phrase in decline_phrases
+    )
+    
+    # Correct if: unanswerable AND declined, or answerable AND didn't decline
+    if is_unanswerable == response_is_decline:
+        return 1.0
+    return 0.0
+```
+
+### 7.3 Metric Computation Implementation (Ragas)
+
+```python
+from ragas.dataset_schema import SingleTurnSample, EvaluationDataset
+from ragas.metrics import (
+    Faithfulness,
+    ResponseRelevancy,
+    LLMContextPrecisionWithReference,
+    LLMContextRecallWithReference,
+)
+from ragas.llms import llm_factory
+from ragas import evaluate
+from openai import AsyncOpenAI
+
+# Initialize evaluator LLM
+client = AsyncOpenAI()
+evaluator_llm = llm_factory("gpt-4o-mini", client=client)
+
+# Define metrics
+metrics = [
+    Faithfulness(llm=evaluator_llm),
+    ResponseRelevancy(llm=evaluator_llm),
+    LLMContextPrecisionWithReference(llm=evaluator_llm),
+    LLMContextRecallWithReference(llm=evaluator_llm),
+]
+
+async def evaluate_single_sample(
+    user_input: str,
+    response: str,
+    retrieved_contexts: list[str],
+    reference: str,
+) -> dict[str, float]:
+    """Evaluate a single sample against all Ragas metrics."""
+    sample = SingleTurnSample(
+        user_input=user_input,
+        response=response,
+        retrieved_contexts=retrieved_contexts,
+        reference=reference,
+    )
+    
+    scores = {}
+    for metric in metrics:
+        try:
+            score = await metric.single_turn_ascore(sample)
+            scores[metric.name] = float(score) if score is not None else None
+        except Exception as e:
+            # Guard against NaN / invalid JSON from LLM judge
+            scores[metric.name] = None
+            logger.warning(f"Metric {metric.name} failed: {e}")
+    
+    return scores
+
+
+async def evaluate_golden_dataset(dataset_path: str, tenant_id: str) -> dict:
+    """Run full evaluation against a golden dataset."""
+    golden = load_golden_dataset(dataset_path)
+    
+    all_scores = []
+    for sample in golden["samples"]:
+        # Run the RAG pipeline to get actual response + retrieved contexts
+        pipeline_result = await run_query_pipeline(
+            query=sample["user_input"],
+            tenant_id=tenant_id,
+        )
+        
+        # Compute Ragas metrics
+        scores = await evaluate_single_sample(
+            user_input=sample["user_input"],
+            response=pipeline_result["answer"],
+            retrieved_contexts=[c["content"] for c in pipeline_result["citations"]],
+            reference=sample["reference"],
+        )
+        
+        # Compute custom metrics
+        scores["citation_coverage"] = citation_coverage_score(
+            pipeline_result["answer"]
+        )
+        scores["decline_accuracy"] = decline_accuracy_score(
+            pipeline_result["answer"],
+            is_unanswerable=(sample["category"] == "unanswerable"),
+        )
+        scores["latency_compliant"] = (
+            1.0 if pipeline_result["retrieval_metadata"]["latency_ms"]["total"] < 5000
+            else 0.0
+        )
+        
+        all_scores.append({
+            "sample_id": sample["id"],
+            "category": sample["category"],
+            "scores": scores,
+        })
+    
+    # Aggregate
+    return aggregate_scores(all_scores)
+```
+
+---
+
+## 8. Database Schema Extensions
+
+### 8.1 Evaluation Runs Table
 
 ```sql
 -- =============================================================
--- Table: prompt_versions
--- Purpose: Versioned storage of generation prompts for auditability
+-- Phase 3: Evaluation pipeline schema
 -- =============================================================
-CREATE TABLE prompt_versions (
+
+-- Table: eval_runs
+-- Purpose: Track each evaluation run with aggregate scores
+CREATE TABLE eval_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,                    -- e.g., "rag_generation_v1"
-  version INTEGER NOT NULL DEFAULT 1,
-  system_prompt TEXT NOT NULL,
-  user_prompt_template TEXT NOT NULL,    -- Contains {context} and {query} placeholders
-  metadata JSONB DEFAULT '{}',          -- Model params, temperature, etc.
-  is_active BOOLEAN DEFAULT true,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  dataset_version TEXT NOT NULL,          -- e.g., "golden_v1.0.0"
+  trigger TEXT NOT NULL,                  -- "ci" | "manual" | "scheduled"
+  git_sha TEXT,                           -- Commit hash that triggered the eval
+  git_branch TEXT,                        -- Branch name
+  status TEXT NOT NULL DEFAULT 'running', -- running | completed | failed
+  
+  -- Aggregate scores
+  faithfulness_avg FLOAT,
+  answer_relevancy_avg FLOAT,
+  context_precision_avg FLOAT,
+  context_recall_avg FLOAT,
+  citation_coverage_avg FLOAT,
+  decline_accuracy_avg FLOAT,
+  latency_compliance_avg FLOAT,
+  
+  -- Thresholds used
+  thresholds JSONB NOT NULL DEFAULT '{}',
+  -- {"faithfulness": 0.85, "answer_relevancy": 0.80, ...}
+  
+  -- Pass/fail
+  passed BOOLEAN,
+  failure_reasons JSONB DEFAULT '[]',
+  -- [{"metric": "faithfulness", "score": 0.78, "threshold": 0.85}]
+  
+  -- Metadata
+  total_samples INTEGER DEFAULT 0,
+  failed_samples INTEGER DEFAULT 0,
+  eval_model TEXT,                        -- LLM used as judge
+  total_eval_cost_usd FLOAT,             -- Estimated evaluation cost
+  duration_seconds FLOAT,
+  
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Unique constraint: one active prompt per name per tenant
-CREATE UNIQUE INDEX idx_prompt_active
-  ON prompt_versions (tenant_id, name)
-  WHERE is_active = true;
+-- Table: eval_sample_results
+-- Purpose: Per-sample detailed scores for debugging
+CREATE TABLE eval_sample_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  eval_run_id UUID NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+  sample_id TEXT NOT NULL,                -- Golden dataset sample ID
+  category TEXT,
+  
+  -- Pipeline outputs
+  user_input TEXT NOT NULL,
+  response TEXT NOT NULL,
+  retrieved_contexts JSONB NOT NULL,      -- Array of chunk texts
+  reference TEXT,
+  
+  -- Scores
+  faithfulness FLOAT,
+  answer_relevancy FLOAT,
+  context_precision FLOAT,
+  context_recall FLOAT,
+  citation_coverage FLOAT,
+  decline_accuracy FLOAT,
+  latency_ms FLOAT,
+  
+  -- Debug metadata
+  num_chunks_retrieved INTEGER,
+  top_rerank_score FLOAT,
+  model_used TEXT,
+  prompt_version TEXT,
+  
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Indexes
+CREATE INDEX idx_eval_runs_tenant
+  ON eval_runs (tenant_id, created_at DESC);
+
+CREATE INDEX idx_eval_runs_git
+  ON eval_runs (git_sha);
+
+CREATE INDEX idx_eval_sample_results_run
+  ON eval_sample_results (eval_run_id);
 
 -- RLS
-ALTER TABLE prompt_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE eval_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE eval_sample_results ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "tenant_isolation_prompts" ON prompt_versions
+CREATE POLICY "tenant_isolation_eval_runs" ON eval_runs
   FOR SELECT
   USING (
-    tenant_id IS NULL  -- Global prompts accessible to all
-    OR tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
+    tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
+  );
+
+CREATE POLICY "tenant_isolation_eval_samples" ON eval_sample_results
+  FOR SELECT
+  USING (
+    eval_run_id IN (
+      SELECT id FROM eval_runs
+      WHERE tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
+    )
   );
 ```
 
-### 6.3 New Function: `match_documents_hybrid`
-
-```sql
--- =============================================================
--- Function: match_documents_hybrid
--- Purpose: Parallel dense + sparse retrieval with RRF fusion
--- =============================================================
-CREATE OR REPLACE FUNCTION match_documents_hybrid(
-  query_embedding VECTOR(1536),
-  query_text TEXT,
-  match_count INT DEFAULT 5,
-  rrf_k INT DEFAULT 60,
-  dense_top_n INT DEFAULT 20,
-  sparse_top_n INT DEFAULT 20,
-  filter_tenant_id UUID DEFAULT NULL
-)
-RETURNS TABLE (
-  id UUID,
-  content TEXT,
-  metadata JSONB,
-  rrf_score FLOAT,
-  dense_rank INT,
-  sparse_rank INT
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  RETURN QUERY
-  WITH dense AS (
-    SELECT
-      d.id,
-      d.content,
-      d.metadata,
-      ROW_NUMBER() OVER (ORDER BY d.embedding <=> query_embedding) AS rank
-    FROM documents d
-    WHERE (filter_tenant_id IS NULL OR d.tenant_id = filter_tenant_id)
-    ORDER BY d.embedding <=> query_embedding
-    LIMIT dense_top_n
-  ),
-  sparse AS (
-    SELECT
-      d.id,
-      d.content,
-      d.metadata,
-      ROW_NUMBER() OVER (ORDER BY ts_rank(d.fts, websearch_to_tsquery('english', query_text)) DESC) AS rank
-    FROM documents d
-    WHERE
-      (filter_tenant_id IS NULL OR d.tenant_id = filter_tenant_id)
-      AND d.fts @@ websearch_to_tsquery('english', query_text)
-    ORDER BY ts_rank(d.fts, websearch_to_tsquery('english', query_text)) DESC
-    LIMIT sparse_top_n
-  ),
-  fused AS (
-    SELECT
-      COALESCE(dense.id, sparse.id) AS id,
-      COALESCE(dense.content, sparse.content) AS content,
-      COALESCE(dense.metadata, sparse.metadata) AS metadata,
-      COALESCE(1.0 / (rrf_k + dense.rank), 0) + COALESCE(1.0 / (rrf_k + sparse.rank), 0) AS rrf_score,
-      dense.rank AS dense_rank,
-      sparse.rank AS sparse_rank
-    FROM dense
-    FULL OUTER JOIN sparse ON dense.id = sparse.id
-  )
-  SELECT
-    fused.id,
-    fused.content,
-    fused.metadata,
-    fused.rrf_score,
-    COALESCE(fused.dense_rank, 0)::INT,
-    COALESCE(fused.sparse_rank, 0)::INT
-  FROM fused
-  ORDER BY fused.rrf_score DESC
-  LIMIT match_count;
-END;
-$$;
-```
-
 ---
 
-## 7. Pipeline Components — Detailed Specification
+## 9. DeepEval CI/CD Integration
 
-### 7.1 Sparse Retrieval (BM25 via tsvector)
+### 9.1 Test File Structure
 
-PostgreSQL's built-in full-text search provides BM25-equivalent ranking through `ts_rank`. This avoids adding an external search engine (Elasticsearch, Meilisearch) while staying within the Supabase ecosystem.
-
-**How it works**:
-
-1. The `fts` column on `documents` is a generated `tsvector` column that automatically tokenizes, stems, and indexes the `content` field.
-2. At query time, the user's query is converted to a `tsquery` using `websearch_to_tsquery()`, which handles natural language input (AND/OR logic, phrase matching).
-3. `ts_rank()` scores each matching document based on term frequency and inverse document frequency — functionally equivalent to BM25 for most use cases.
-
-**Why not an external BM25 engine?**
-
-- Supabase's native `tsvector` avoids infrastructure complexity.
-- For the expected document volumes (thousands to low tens-of-thousands of chunks per tenant), PostgreSQL full-text search performs well.
-- If scale demands it in later phases, this can be swapped for Elasticsearch or Typesense without changing the RRF logic.
-
-### 7.2 Reciprocal Rank Fusion (RRF)
-
-RRF merges the ranked lists from dense and sparse retrieval into a single candidate set without requiring score normalization.
-
-**Formula**:
-
-RRFScore(d) = Σ  1 / (k + rank_r(d))
-r ∈ {dense, sparse}
-
-Where:
-- `rank_r(d)` is the rank of document `d` in retrieval method `r` (1-indexed)
-- `k` is a smoothing constant (default: 60) that prevents top-ranked documents from dominating
-
-**Example**:
-
-A document ranked #1 in dense and #3 in sparse:
-
-RRFScore = 1/(60+1) + 1/(60+3) = 0.01639 + 0.01587 = 0.03226
-
-A document ranked #2 in dense only (not in sparse results):
-
-RRFScore = 1/(60+2) + 0 = 0.01613
-
-The first document wins because it appeared in both retrieval methods.
-
-**Implementation** (Python, in case the SQL function is insufficient for complex scenarios):
+DeepEval provides pytest-compatible test execution with pass/fail thresholds. This is the primary mechanism for CI quality gates.
 
 ```python
-def reciprocal_rank_fusion(
-    dense_results: list[dict],
-    sparse_results: list[dict],
-    k: int = 60
-) -> list[dict]:
-    """Fuse dense and sparse ranked lists using RRF."""
-    scores = {}
-    doc_map = {}
+# tests/test_rag_evaluation.py
 
-    for rank, doc in enumerate(dense_results, start=1):
-        doc_id = doc["id"]
-        scores[doc_id] = scores.get(doc_id, 0) + 1 / (k + rank)
-        doc_map[doc_id] = doc
-        doc_map[doc_id]["dense_rank"] = rank
+import pytest
+import json
+import asyncio
+from deepeval import assert_test
+from deepeval.metrics import (
+    FaithfulnessMetric,
+    AnswerRelevancyMetric,
+    ContextualPrecisionMetric,
+    ContextualRecallMetric,
+)
+from deepeval.test_case import LLMTestCase
+from deepeval.dataset import EvaluationDataset
 
-    for rank, doc in enumerate(sparse_results, start=1):
-        doc_id = doc["id"]
-        scores[doc_id] = scores.get(doc_id, 0) + 1 / (k + rank)
-        if doc_id not in doc_map:
-            doc_map[doc_id] = doc
-        doc_map[doc_id]["sparse_rank"] = rank
+from app.pipeline.orchestrator import run_query_pipeline
 
-    fused = []
-    for doc_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
-        entry = doc_map[doc_id]
-        entry["rrf_score"] = score
-        fused.append(entry)
 
-    return fused
-```
+def load_golden_dataset(path: str = "eval/datasets/golden_v1.0.0.json"):
+    """Load golden dataset and convert to DeepEval format."""
+    with open(path) as f:
+        golden = json.load(f)
+    return golden["samples"]
 
-### 7.3 Cross-Encoder Reranking
 
-After RRF produces a merged candidate pool (~20-30 documents), a cross-encoder reranker rescores each candidate by processing the (query, chunk) pair jointly. This is far more accurate than the independent embeddings used in the retrieval step.
+def run_pipeline_sync(query: str, tenant_id: str) -> dict:
+    """Synchronous wrapper for the async query pipeline."""
+    return asyncio.run(run_query_pipeline(query=query, tenant_id=tenant_id))
 
-**Primary: Cohere Rerank API**
 
-```python
-import cohere
+# Load golden dataset
+golden_samples = load_golden_dataset()
 
-co = cohere.Client(api_key=COHERE_API_KEY)
-
-def rerank_chunks(
-    query: str,
-    chunks: list[dict],
-    top_k: int = 5
-) -> list[dict]:
-    """Rerank candidate chunks using Cohere cross-encoder."""
-    documents = [chunk["content"] for chunk in chunks]
-
-    response = co.rerank(
-        model="rerank-english-v3.0",
-        query=query,
-        documents=documents,
-        top_n=top_k,
-        return_documents=False,
+# Build test cases by running pipeline on each golden sample
+test_cases = []
+for sample in golden_samples:
+    result = run_pipeline_sync(
+        query=sample["user_input"],
+        tenant_id=sample.get("tenant_id", "default-tenant-id"),
+    )
+    
+    test_cases.append(
+        LLMTestCase(
+            input=sample["user_input"],
+            actual_output=result["answer"],
+            expected_output=sample["reference"],
+            retrieval_context=[c["content"] for c in result["citations"]],
+        )
     )
 
-    reranked = []
-    for result in response.results:
-        chunk = chunks[result.index]
-        chunk["rerank_score"] = result.relevance_score
-        reranked.append(chunk)
+dataset = EvaluationDataset(test_cases=test_cases)
 
-    return reranked
+
+@pytest.mark.parametrize("test_case", dataset)
+def test_rag_faithfulness(test_case: LLMTestCase):
+    metric = FaithfulnessMetric(threshold=0.85)
+    assert_test(test_case, [metric])
+
+
+@pytest.mark.parametrize("test_case", dataset)
+def test_rag_answer_relevancy(test_case: LLMTestCase):
+    metric = AnswerRelevancyMetric(threshold=0.80)
+    assert_test(test_case, [metric])
+
+
+@pytest.mark.parametrize("test_case", dataset)
+def test_rag_context_precision(test_case: LLMTestCase):
+    metric = ContextualPrecisionMetric(threshold=0.75)
+    assert_test(test_case, [metric])
+
+
+@pytest.mark.parametrize("test_case", dataset)
+def test_rag_context_recall(test_case: LLMTestCase):
+    metric = ContextualRecallMetric(threshold=0.75)
+    assert_test(test_case, [metric])
 ```
 
-**Fallback: Local Cross-Encoder**
-
-```python
-from sentence_transformers import CrossEncoder
-
-model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-
-def rerank_chunks_local(
-    query: str,
-    chunks: list[dict],
-    top_k: int = 5
-) -> list[dict]:
-    """Rerank using local cross-encoder model."""
-    pairs = [(query, chunk["content"]) for chunk in chunks]
-    scores = model.predict(pairs)
-
-    for i, score in enumerate(scores):
-        chunks[i]["rerank_score"] = float(score)
-
-    reranked = sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)
-    return reranked[:top_k]
-```
-
-**When to use which**:
-
-| Scenario                           | Use Cohere API          | Use Local Model         |
-|------------------------------------|-------------------------|-------------------------|
-| Cloud SaaS deployment              | ✓ (preferred)           |                         |
-| Self-hosted / air-gapped           |                         | ✓ (required)            |
-| Cost-sensitive high-volume         |                         | ✓ (no per-query cost)   |
-| Maximum accuracy                   | ✓ (larger model)        |                         |
-
-### 7.4 Citation-Enforced Generation
-
-This is the core addition of Phase 2 — the LLM generates responses that are grounded in retrieved context and include citation anchors mapping back to source metadata.
-
-**Context Assembly**:
-
-Before sending to the LLM, the top-K reranked chunks are formatted with unique identifiers:
-
-```python
-def assemble_context(chunks: list[dict]) -> str:
-    """Build citation-aware context string for LLM prompt."""
-    context_parts = []
-    for i, chunk in enumerate(chunks):
-        source_id = f"[SOURCE_{i+1}]"
-        meta = chunk["metadata"]
-        header = (
-            f"{source_id}\n"
-            f"Document: {meta.get('document_title', meta.get('source', 'Unknown'))}\n"
-            f"Section: {meta.get('section_heading', 'N/A')}\n"
-            f"Page: {meta.get('page_number', 'N/A')}\n"
-            f"---\n"
-            f"{chunk['content']}"
-        )
-        context_parts.append(header)
-    return "\n\n".join(context_parts)
-```
-
-**Prompt Structure** (stored in YAML, loaded at runtime):
+### 9.2 GitHub Actions Workflow
 
 ```yaml
-# prompts/rag_generation_v1.yaml
-name: rag_generation_v1
-version: 1
-model: gpt-4o
-temperature: 0.1
-max_tokens: 2048
+# .github/workflows/rag-evaluation.yml
+name: RAG Quality Gate
 
-system_prompt: |
-  You are a precise, domain-expert assistant. Your sole purpose is to answer
-  questions using ONLY the provided source context.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/pipeline/**'
+      - 'prompts/**'
+      - 'sql/**'
+      - 'eval/**'
+      - 'tests/test_rag_evaluation.py'
 
-  RULES:
-  1. Answer ONLY based on the provided context. Do not use prior knowledge.
-  2. For every factual claim in your response, include a citation anchor
-     in the format [SOURCE_N] immediately after the claim.
-  3. If multiple sources support a claim, cite all of them: [SOURCE_1][SOURCE_3].
-  4. If the provided context does NOT contain enough information to answer
-     the question, respond EXACTLY with:
-     "I don't have enough information in the available documents to answer
-     this question. The following sources were searched: {sources_list}"
-  5. Do not speculate, infer, or extrapolate beyond what is explicitly stated
-     in the context.
-  6. Preserve technical terminology exactly as it appears in the sources.
-  7. If the context contains conflicting information, acknowledge the conflict
-     and cite both sources.
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      dataset_version:
+        description: 'Golden dataset version (e.g., golden_v1.0.0)'
+        required: false
+        default: 'golden_v1.0.0'
 
-user_prompt_template: |
-  CONTEXT:
-  {context}
+  # Weekly scheduled run to detect drift
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM UTC
 
-  ---
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
-  QUESTION: {query}
+    services:
+      # If tests need a local Supabase instance
+      postgres:
+        image: supabase/postgres:15.1.0.117
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
-  Provide a precise answer with citations.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install deepeval>=1.0.0
+
+      - name: Run RAG evaluation suite
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EVAL_DATASET: ${{ github.event.inputs.dataset_version || 'golden_v1.0.0' }}
+        run: |
+          deepeval test run tests/test_rag_evaluation.py --verbose
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ github.sha }}
+          path: eval/reports/
+
+      - name: Store results in database
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python eval/scripts/store_results.py \
+            --git-sha ${{ github.sha }} \
+            --git-branch ${{ github.head_ref || github.ref_name }} \
+            --trigger ci
 ```
 
-**Prompt Loading**:
+### 9.3 Threshold Configuration
 
-```python
-import yaml
-from pathlib import Path
+Thresholds are stored in a configuration file that can be adjusted without code changes:
 
-def load_prompt(name: str, tenant_id: str | None = None) -> dict:
-    """Load prompt config from YAML file or database."""
-    # Priority: tenant-specific DB prompt > global DB prompt > YAML file
-    if tenant_id:
-        db_prompt = fetch_active_prompt(tenant_id, name)
-        if db_prompt:
-            return db_prompt
+```yaml
+# eval/config/thresholds.yaml
+version: "1.0.0"
 
-    global_prompt = fetch_active_prompt(None, name)
-    if global_prompt:
-        return global_prompt
+# Core Ragas metrics
+faithfulness:
+  threshold: 0.85
+  blocking: true          # Fails CI if below threshold
+  
+answer_relevancy:
+  threshold: 0.80
+  blocking: true
+  
+context_precision:
+  threshold: 0.75
+  blocking: true
+  
+context_recall:
+  threshold: 0.75
+  blocking: false         # Warning only — non-blocking initially
 
-    # Fallback to YAML
-    path = Path(f"prompts/{name}.yaml")
-    with open(path) as f:
-        return yaml.safe_load(f)
-```
+# Custom metrics
+citation_coverage:
+  threshold: 0.90
+  blocking: true
+  
+decline_accuracy:
+  threshold: 0.80
+  blocking: true
+  
+latency_compliance:
+  threshold: 0.90
+  blocking: false         # Warning only
 
-### 7.5 Hallucination Guardrails
-
-The system implements two layers of hallucination defense:
-
-**Layer 1: Relevance Threshold**
-
-After reranking, if the top-ranked chunk's relevance score is below a configurable threshold, the system short-circuits generation and returns a "no sufficient context" response.
-
-```python
-RELEVANCE_THRESHOLD = 0.25  # Cohere rerank scores range 0-1
-
-def check_relevance(reranked_chunks: list[dict]) -> bool:
-    """Check if any chunk meets minimum relevance threshold."""
-    if not reranked_chunks:
-        return False
-    return reranked_chunks[0]["rerank_score"] >= RELEVANCE_THRESHOLD
-```
-
-**Layer 2: Prompt-Based Decline**
-
-The system prompt (Section 7.4) instructs the LLM to explicitly decline if context is insufficient. This acts as a second defense if the relevance threshold is too permissive.
-
-### 7.6 Streaming Response (SSE)
-
-For responsive UX, the generation endpoint streams tokens as they are produced:
-
-```python
-from sse_starlette.sse import EventSourceResponse
-from openai import OpenAI
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-async def stream_generation(prompt: dict, context: str, query: str):
-    """Stream LLM response token-by-token via SSE."""
-    messages = [
-        {"role": "system", "content": prompt["system_prompt"]},
-        {"role": "user", "content": prompt["user_prompt_template"].format(
-            context=context, query=query
-        )},
-    ]
-
-    stream = client.chat.completions.create(
-        model=prompt.get("model", "gpt-4o"),
-        messages=messages,
-        temperature=prompt.get("temperature", 0.1),
-        max_tokens=prompt.get("max_tokens", 2048),
-        stream=True,
-    )
-
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            yield {"event": "token", "data": delta}
-
-    yield {"event": "done", "data": ""}
+# Aggregate rules
+min_passing_rate: 0.80    # At least 80% of samples must pass all blocking metrics
 ```
 
 ---
 
-## 8. API Design (Phase 2)
+## 10. API Design (Phase 3)
 
-### 8.1 Updated Endpoints
+### 10.1 New Endpoints
 
-Phase 2 replaces the basic `/query` endpoint and adds a streaming variant.
+#### `POST /eval/run` (New)
 
-#### `POST /query` (Updated)
-
-Full hybrid retrieval → rerank → generate pipeline. Returns a complete response with citations.
+Trigger an evaluation run for a tenant.
 
 **Headers**:
 - `Authorization: Bearer <jwt_token>`
@@ -610,361 +884,267 @@ Full hybrid retrieval → rerank → generate pipeline. Returns a complete respo
 **Body**:
 ```json
 {
-  "query": "What is the liability cap in the MSA?",
-  "match_count": 5,
-  "stream": false,
-  "include_sources": true,
-  "rerank": true,
-  "prompt_name": "rag_generation_v1"
+  "dataset_version": "golden_v1.0.0",
+  "tenant_id": "uuid",
+  "trigger": "manual"
 }
 ```
+
+**Response** (`202 Accepted`):
+```json
+{
+  "eval_run_id": "uuid",
+  "status": "running",
+  "message": "Evaluation pipeline started"
+}
+```
+
+#### `GET /eval/runs` (New)
+
+List evaluation runs for a tenant with scores.
 
 **Response** (`200 OK`):
 ```json
 {
-  "query": "What is the liability cap in the MSA?",
-  "answer": "The liability cap shall not exceed $1,000,000 in aggregate for all claims arising under the agreement [SOURCE_1]. This limitation applies to both direct and indirect damages [SOURCE_1], and is governed by Section 3.2 of the Master Services Agreement [SOURCE_2].",
-  "citations": [
+  "runs": [
     {
-      "source_id": "SOURCE_1",
-      "chunk_id": "uuid-chunk-1",
-      "content": "The liability cap shall not exceed...",
-      "metadata": {
-        "source": "contract.pdf",
-        "page_number": 5,
-        "bounding_boxes": [[72, 340, 540, 380]],
-        "section_heading": "Section 3.2 — Limitation of Liability",
-        "document_title": "Master Services Agreement"
+      "id": "uuid",
+      "dataset_version": "golden_v1.0.0",
+      "trigger": "ci",
+      "git_sha": "abc123",
+      "status": "completed",
+      "passed": true,
+      "scores": {
+        "faithfulness_avg": 0.91,
+        "answer_relevancy_avg": 0.87,
+        "context_precision_avg": 0.82,
+        "context_recall_avg": 0.79,
+        "citation_coverage_avg": 0.94,
+        "decline_accuracy_avg": 0.88
       },
-      "rerank_score": 0.95,
-      "rrf_score": 0.032
-    },
-    {
-      "source_id": "SOURCE_2",
-      "chunk_id": "uuid-chunk-2",
-      "content": "Section 3.2 governs all liability...",
-      "metadata": {
-        "source": "contract.pdf",
-        "page_number": 6,
-        "bounding_boxes": [[72, 100, 540, 140]],
-        "section_heading": "Section 3.2 — Limitation of Liability",
-        "document_title": "Master Services Agreement"
-      },
-      "rerank_score": 0.88,
-      "rrf_score": 0.028
-    }
-  ],
-  "retrieval_metadata": {
-    "dense_results": 20,
-    "sparse_results": 12,
-    "rrf_candidates": 26,
-    "reranked_top_k": 5,
-    "model": "gpt-4o",
-    "prompt_version": "rag_generation_v1:v1",
-    "latency_ms": {
-      "embedding": 45,
-      "dense_retrieval": 32,
-      "sparse_retrieval": 18,
-      "rrf_fusion": 2,
-      "reranking": 380,
-      "generation": 1200,
-      "total": 1677
-    }
-  }
-}
-```
-
-#### `POST /query/stream`
-
-Same pipeline, but streams the generation step via SSE.
-
-**Body**: Same as `/query` (the `stream` field is ignored; this endpoint always streams).
-
-**SSE Events**:
-
-```
-event: sources
-data: {"citations": [...]}    ← Sent first, before generation begins
-event: token
-data: "The"
-event: token
-data: " liability"
-event: token
-data: " cap"
-...
-event: done
-data: {"retrieval_metadata": {...}}
-```
-The `sources` event is sent before generation begins so the frontend can pre-render citation cards while tokens stream in.
-
-#### `GET /prompts` (New)
-
-List available prompt templates for the authenticated tenant.
-
-**Response** (`200 OK`):
-```json
-{
-  "prompts": [
-    {
-      "name": "rag_generation_v1",
-      "version": 1,
-      "is_active": true,
-      "model": "gpt-4o",
-      "created_at": "2025-04-20T10:00:00Z"
+      "total_samples": 50,
+      "failed_samples": 3,
+      "created_at": "2026-04-14T10:00:00Z"
     }
   ]
 }
 ```
 
-#### `POST /prompts` (New)
+#### `GET /eval/runs/{run_id}/samples` (New)
 
-Create or update a prompt template. Setting `is_active: true` deactivates the previous version for that name.
+Get per-sample results for debugging failures.
 
-**Body**:
+**Response** (`200 OK`):
 ```json
 {
-  "name": "rag_generation_v1",
-  "system_prompt": "...",
-  "user_prompt_template": "...",
-  "metadata": {
-    "model": "gpt-4o",
-    "temperature": 0.1,
-    "max_tokens": 2048
-  }
+  "samples": [
+    {
+      "sample_id": "gs-001",
+      "category": "exact_match",
+      "user_input": "What is the liability cap?",
+      "response": "The liability cap is...",
+      "scores": {
+        "faithfulness": 0.95,
+        "answer_relevancy": 0.92,
+        "context_precision": 0.88,
+        "context_recall": 1.0,
+        "citation_coverage": 1.0
+      },
+      "passed": true
+    },
+    {
+      "sample_id": "gs-015",
+      "category": "multi_context",
+      "user_input": "How do termination clauses differ?",
+      "response": "...",
+      "scores": {
+        "faithfulness": 0.60,
+        "answer_relevancy": 0.75,
+        "context_precision": 0.50,
+        "context_recall": 0.40,
+        "citation_coverage": 0.80
+      },
+      "passed": false,
+      "failure_reasons": ["faithfulness below 0.85", "context_precision below 0.75"]
+    }
+  ]
 }
 ```
 
-### 8.2 Existing Endpoints (Unchanged)
+### 10.2 CLI Commands
 
-These Phase 1 endpoints remain as-is:
+```bash
+# Run evaluation locally
+python -m eval.run --dataset golden_v1.0.0 --tenant-id <uuid>
 
-- `POST /ingest` — Document upload and ingestion
-- `GET /status/{job_id}` — Ingestion job polling
-- `GET /health` — Health check (extended to include Cohere connectivity)
+# Generate synthetic test data
+python -m eval.generate --tenant-id <uuid> --size 50 --output eval/datasets/synthetic_draft.json
 
----
+# View evaluation history
+python -m eval.history --tenant-id <uuid> --last 10
 
-## 9. Pipeline Orchestrator (Phase 2 Query Pipeline)
-
-### 9.1 Orchestration Flow
-
-The query pipeline is orchestrated as a sequential chain using LangChain/LangGraph:
-
-```python
-from langchain_core.runnables import RunnableSequence
-
-query_pipeline = RunnableSequence(
-    embed_query,           # Step 1: Embed the user query
-    hybrid_retrieve,       # Step 2: Dense + Sparse + RRF
-    rerank,                # Step 3: Cross-encoder reranking
-    check_relevance,       # Step 4: Hallucination guardrail
-    assemble_context,      # Step 5: Build citation-aware prompt
-    generate_response,     # Step 6: LLM generation with citations
-    parse_citations,       # Step 7: Extract and resolve citation anchors
-)
-```
-
-### 9.2 Citation Resolution
-
-After generation, the response text is parsed to extract `[SOURCE_N]` anchors and resolve them to full metadata:
-
-```python
-import re
-
-def resolve_citations(
-    response_text: str,
-    chunks: list[dict]
-) -> tuple[str, list[dict]]:
-    """Extract citation anchors and map to chunk metadata."""
-    pattern = r'\[SOURCE_(\d+)\]'
-    cited_indices = set(int(m) for m in re.findall(pattern, response_text))
-
-    citations = []
-    for idx in sorted(cited_indices):
-        if 1 <= idx <= len(chunks):
-            chunk = chunks[idx - 1]
-            citations.append({
-                "source_id": f"SOURCE_{idx}",
-                "chunk_id": chunk["id"],
-                "content": chunk["content"][:200] + "...",
-                "metadata": chunk["metadata"],
-                "rerank_score": chunk.get("rerank_score"),
-                "rrf_score": chunk.get("rrf_score"),
-            })
-
-    return response_text, citations
+# Compare two evaluation runs
+python -m eval.compare --run-a <uuid> --run-b <uuid>
 ```
 
 ---
 
-## 10. Project Structure (Phase 2 Additions)
+## 11. Project Structure (Phase 3 Additions)
 
 ```
 rag-ingestion/
 ├── app/
 │   ├── api/
-│   │   ├── query.py               # UPDATED: Hybrid retrieval + generation
-│   │   ├── query_stream.py        # NEW: SSE streaming endpoint
-│   │   └── prompts.py             # NEW: Prompt management endpoints
-│   ├── pipeline/
-│   │   ├── orchestrator.py        # UPDATED: Phase 2 query pipeline
-│   │   ├── retriever_dense.py     # NEW: Vector similarity retrieval
-│   │   ├── retriever_sparse.py    # NEW: tsvector/BM25 retrieval
-│   │   ├── fusion.py              # NEW: RRF implementation
-│   │   ├── reranker.py            # NEW: Cross-encoder reranking
-│   │   ├── generator.py           # NEW: Citation-enforced LLM generation
-│   │   └── citation_resolver.py   # NEW: Parse and resolve citation anchors
-│   ├── models/
-│   │   └── schemas.py             # UPDATED: New request/response models
-│   └── utils/
-│       └── prompt_loader.py       # NEW: YAML + DB prompt loading
-├── prompts/
-│   └── rag_generation_v1.yaml     # NEW: Default generation prompt
+│   │   └── eval.py                    # NEW: /eval/* endpoints
+│   └── ...
+├── eval/
+│   ├── init.py
+│   ├── run.py                         # NEW: Main evaluation runner
+│   ├── generate.py                    # NEW: Synthetic test data generation
+│   ├── history.py                     # NEW: Eval history viewer
+│   ├── compare.py                     # NEW: Run comparison tool
+│   ├── metrics/
+│   │   ├── init.py
+│   │   ├── citation_coverage.py       # NEW: Custom citation metric
+│   │   ├── decline_accuracy.py        # NEW: Custom decline metric
+│   │   └── latency_compliance.py      # NEW: Custom latency metric
+│   ├── config/
+│   │   └── thresholds.yaml            # NEW: Threshold configuration
+│   ├── datasets/
+│   │   ├── golden_v1.0.0.json         # NEW: Initial golden dataset
+│   │   └── CHANGELOG.md              # NEW: Dataset version history
+│   ├── scripts/
+│   │   └── store_results.py           # NEW: Store eval results in Supabase
+│   └── reports/                       # NEW: Generated evaluation reports (gitignored)
 ├── sql/
-│   ├── schema.sql                 # Phase 1 schema (unchanged)
-│   └── phase2_migration.sql       # NEW: fts column, hybrid function, prompts table
+│   ├── schema.sql                     # Phase 1
+│   ├── phase2_migration.sql           # Phase 2
+│   └── phase3_migration.sql           # NEW: eval_runs, eval_sample_results
 ├── tests/
-│   ├── test_retriever_sparse.py   # NEW
-│   ├── test_fusion.py             # NEW
-│   ├── test_reranker.py           # NEW
-│   ├── test_generator.py          # NEW
-│   ├── test_citation_resolver.py  # NEW
-│   └── test_query_pipeline.py     # NEW: End-to-end query pipeline test
+│   ├── test_rag_evaluation.py         # NEW: DeepEval CI test suite
+│   └── test_custom_metrics.py         # NEW: Unit tests for custom metrics
+├── .github/
+│   └── workflows/
+│       └── rag-evaluation.yml         # NEW: GitHub Actions workflow
 └── ...
 ```
 
 ---
 
-## 11. Environment Variables (Phase 2 Additions)
+## 12. Environment Variables (Phase 3 Additions)
 
 ```env
-# --- Phase 1 variables remain unchanged ---
+# --- Phase 1 + Phase 2 variables remain unchanged ---
 
-# Cohere (Reranking)
-COHERE_API_KEY=...
+# Evaluation
+EVAL_DATASET_PATH=eval/datasets/golden_v1.0.0.json
+EVAL_LLM_JUDGE=gpt-4o-mini           # LLM used for metric evaluation
+EVAL_FAITHFULNESS_LLM=gpt-4o         # Use stronger model for faithfulness
+EVAL_TIMEOUT_SECONDS=300              # Max time per evaluation run
+RAGAS_DO_NOT_TRACK=true               # Opt out of Ragas telemetry
 
-# Generation
-GENERATION_MODEL=gpt-4o             # or gpt-4o-mini for cost savings
-GENERATION_TEMPERATURE=0.1
-GENERATION_MAX_TOKENS=2048
-
-# Retrieval Tuning
-DENSE_TOP_N=20
-SPARSE_TOP_N=20
-RRF_K=60
-RERANK_TOP_K=5
-RELEVANCE_THRESHOLD=0.25
-
-# Reranker Selection
-RERANKER_PROVIDER=cohere             # cohere | local
-LOCAL_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
-
-# Prompt
-DEFAULT_PROMPT_NAME=rag_generation_v1
+# Thresholds (can also be set in thresholds.yaml)
+EVAL_THRESHOLD_FAITHFULNESS=0.85
+EVAL_THRESHOLD_ANSWER_RELEVANCY=0.80
+EVAL_THRESHOLD_CONTEXT_PRECISION=0.75
+EVAL_THRESHOLD_CONTEXT_RECALL=0.75
+EVAL_THRESHOLD_CITATION_COVERAGE=0.90
 ```
 
 ---
 
-## 12. Engineering Considerations
+## 13. Engineering Considerations
 
-### 12.1 Performance
+### 13.1 Cost Management
 
-- **Parallel Retrieval**: Dense and sparse searches run concurrently (Python `asyncio.gather` or the SQL function handles both in a single call). This keeps retrieval latency at the slower of the two, not the sum.
-- **Reranker Latency**: The Cohere API call is the single largest latency contributor (~200-500ms for 20 documents). For latency-sensitive applications, reduce the reranker input count or use the local model.
-- **Streaming**: SSE streaming hides generation latency from the user. Time-to-first-token is the key metric, not total generation time.
-- **Context Window Management**: With `gpt-4o` (128K context), 5 chunks of 700 tokens each uses ~3,500 tokens of context — well within limits. The prompt itself adds ~500 tokens. Total input is ~4,000 tokens per query.
+Evaluation is expensive because every metric computation involves one or more LLM-as-judge calls.
 
-### 12.2 Reliability
+| Component                        | Cost per Eval Run (50 samples) | Notes                           |
+|----------------------------------|--------------------------------|----------------------------------|
+| RAG pipeline execution (50 queries) | ~$0.60-1.60                | 50 × $0.012-0.032 per query     |
+| Faithfulness scoring             | ~$0.50-1.00                    | Multiple claims per sample       |
+| Answer Relevancy scoring         | ~$0.25-0.50                    | N question generations per sample |
+| Context Precision scoring        | ~$0.15-0.30                    | One LLM call per sample          |
+| Context Recall scoring           | ~$0.15-0.30                    | One LLM call per sample          |
+| **Total per run (gpt-4o-mini judge)** | **~$1.65-3.70**          |                                  |
+| **Total per run (gpt-4o judge)**  | **~$5.00-12.00**              | Use sparingly                    |
 
-- **Reranker Fallback**: If Cohere API is unavailable, automatically fall back to the local cross-encoder. Log the fallback event.
-- **Generation Timeout**: Set a 30-second timeout on LLM generation. If exceeded, return whatever has been generated so far (for streaming) or a timeout error (for non-streaming).
-- **Empty Retrieval**: If both dense and sparse retrieval return zero results, short-circuit to a "no relevant documents found" response without calling the LLM.
-- **Retry Logic**: Same exponential backoff from Phase 1 applies to Cohere and OpenAI generation calls (max 3 retries).
+**Cost mitigation strategies**:
+- Use `gpt-4o-mini` as the default judge; `gpt-4o` only for faithfulness.
+- Cache pipeline results during evaluation so re-runs don't re-execute queries.
+- Run full evaluation only on PRs that touch pipeline/prompt code (path filters in GitHub Actions).
+- Scheduled weekly runs can use a smaller subset (20 samples) to detect drift cheaply.
 
-### 12.3 Observability
+### 13.2 Reliability
 
-- **Per-Step Latency**: Track and return latency for each pipeline step (embedding, dense, sparse, RRF, reranking, generation) in the response metadata.
-- **Citation Coverage**: Track the percentage of generated claims that include citation anchors. Low coverage suggests the prompt needs tuning.
-- **Reranker Score Distribution**: Monitor the distribution of rerank scores. A consistently low max score suggests retrieval quality issues upstream.
-- **Metrics to Add**:
-  - Query latency (total and per-step)
-  - Reranker fallback rate
-  - Relevance threshold rejection rate
-  - Citation anchor count per response
-  - Token usage per query (input + output)
+- **NaN Score Handling**: Ragas can return NaN when the LLM judge produces invalid JSON. Pin Ragas version, wrap metric calls in try/except, and log failures. A sample with a NaN score should be counted as a failure, not skipped.
+- **Rate Limiting**: With 50 samples × 4 metrics, evaluation generates ~200 LLM calls. Use async with concurrency limits (max 5 parallel) and exponential backoff.
+- **Determinism**: LLM-as-judge is inherently non-deterministic. Expect ±2-3% score variance between identical runs. Set thresholds with this margin in mind.
+- **Timeout Protection**: Set a 5-minute timeout for the entire evaluation run. If exceeded, report partial results and mark the run as `failed`.
 
-### 12.4 Cost Estimation
+### 13.3 Observability
 
-| Component                | Cost per Query (approx)  | Notes                              |
-|--------------------------|--------------------------|-------------------------------------|
-| Query embedding          | ~$0.000002               | Single embedding call               |
-| Cohere rerank            | ~$0.002                  | 20 documents reranked               |
-| GPT-4o generation        | ~$0.01-0.03              | ~4K input + ~500 output tokens      |
-| GPT-4o-mini generation   | ~$0.001-0.003            | 10x cheaper, slightly lower quality |
-| **Total (GPT-4o)**       | **~$0.012-0.032**        |                                     |
-| **Total (GPT-4o-mini)**  | **~$0.003-0.005**        |                                     |
+- **Per-Sample Drill-Down**: Store every sample's scores in `eval_sample_results` so failed runs can be debugged at the individual question level.
+- **Score Trends**: Track aggregate scores over time per tenant to detect gradual drift.
+- **Category Breakdown**: Report scores segmented by category (exact_match, conceptual, unanswerable, etc.) to identify systematic weaknesses.
+- **Failure Distribution**: Track which categories fail most often to guide dataset expansion.
 
-At 10,000 queries/month with GPT-4o: ~$120-320/month for generation costs.
+### 13.4 Known Limitations
 
----
-
-## 13. Security Considerations (Phase 2)
-
-All Phase 1 security measures remain in effect. Additional Phase 2 concerns:
-
-- **Prompt Injection Defense**: The system prompt explicitly constrains the LLM to use only provided context. User queries are placed in the `user` role, not the `system` role. However, this is not foolproof — Phase 3 evaluation should include adversarial prompt injection tests.
-- **Tenant Isolation in Generation**: The retrieval step is tenant-scoped via RLS. The LLM never sees chunks from other tenants. The `tenant_id` is never included in the prompt sent to the LLM.
-- **API Key Security**: The Cohere API key is server-side only, same handling as OpenAI and LlamaParse keys.
-- **Prompt Versioning Audit Trail**: The `prompt_versions` table retains all versions (deactivated prompts are not deleted), providing a full audit trail of prompt changes.
+- **LLM-as-judge bias**: The evaluation LLM may have systematic biases. Periodically validate metric scores against human judgments.
+- **Reference answer quality**: Evaluation is only as good as the golden dataset. Bad reference answers produce misleading scores.
+- **Cost at scale**: Multi-tenant evaluation (running against every tenant's corpus) can be expensive. Consider sampling strategies for large tenant counts.
+- **Latency variance**: Network conditions and API response times introduce noise into latency metrics. Use percentile-based thresholds (P95) rather than averages for production monitoring.
 
 ---
 
-## 14. Deliverables (Phase 2 Completion Criteria)
+## 14. Deliverables (Phase 3 Completion Criteria)
 
 | #  | Deliverable                                        | Acceptance Criteria                                                                    |
 |----|----------------------------------------------------|----------------------------------------------------------------------------------------|
-| 1  | Full-text search column + index                    | `fts` tsvector column on `documents`; GIN index active                                  |
-| 2  | Hybrid retrieval function                          | `match_documents_hybrid` returns RRF-fused results from dense + sparse                  |
-| 3  | Cross-encoder reranking                            | Cohere rerank integration with local fallback; top-K selection working                  |
-| 4  | Citation-enforced generation                       | LLM responses include `[SOURCE_N]` anchors; citations resolve to chunk metadata         |
-| 5  | Hallucination guardrails                           | System declines when relevance threshold not met; prompt enforces context-only answers   |
-| 6  | Updated `/query` endpoint                          | Full pipeline: embed → hybrid retrieve → rerank → generate → cite                       |
-| 7  | Streaming `/query/stream` endpoint                 | SSE streaming with sources sent before generation begins                                 |
-| 8  | Prompt management (`/prompts` endpoints + YAML)    | Versioned prompts loadable from DB or YAML; tenant-specific overrides supported          |
-| 9  | Per-step latency tracking                          | Response includes latency breakdown for each pipeline stage                              |
-| 10 | Test suite for Phase 2 components                  | Unit tests for sparse retriever, RRF, reranker, generator, citation resolver             |
+| 1  | Golden dataset (v1.0.0)                            | ≥50 curated samples across all 6 categories; stored in versioned JSON                  |
+| 2  | Synthetic test generation pipeline                 | Ragas TestsetGenerator produces samples from ingested docs; human review workflow documented |
+| 3  | Ragas evaluation pipeline                          | Computes Faithfulness, Answer Relevancy, Context Precision, Context Recall per sample   |
+| 4  | Custom metrics                                     | Citation Coverage, Decline Accuracy, Latency Compliance implemented and tested          |
+| 5  | DeepEval test suite                                | `test_rag_evaluation.py` runs with pass/fail thresholds via `deepeval test run`         |
+| 6  | GitHub Actions CI workflow                         | PRs touching pipeline/prompt code trigger evaluation; merge blocked on failure          |
+| 7  | Evaluation storage schema                          | `eval_runs` and `eval_sample_results` tables deployed with RLS                         |
+| 8  | Evaluation API endpoints                           | `/eval/run`, `/eval/runs`, `/eval/runs/{id}/samples` operational                       |
+| 9  | CLI tools                                          | `eval.run`, `eval.generate`, `eval.history`, `eval.compare` commands working           |
+| 10 | Score tracking and comparison                      | Historical scores queryable; run comparison shows score deltas                          |
+| 11 | Documentation                                      | Dataset creation guide, evaluation workflow, threshold tuning guide                     |
 
 ---
 
 ## 15. Migration Checklist
 
-Steps to upgrade a running Phase 1 deployment to Phase 2:
+Steps to add Phase 3 to a running Phase 2 deployment:
 
-1. Run `sql/phase2_migration.sql` to add the `fts` column, GIN index, `prompt_versions` table, and `match_documents_hybrid` function.
-2. The `fts` column is `GENERATED ALWAYS`, so it auto-populates for all existing rows — no backfill needed.
-3. Add Phase 2 environment variables (Cohere key, generation model, retrieval tuning params).
-4. Install new Python dependencies (`cohere`, `sentence-transformers`, `pyyaml`, `sse-starlette`, `tiktoken`).
-5. Deploy new pipeline modules and updated API endpoints.
-6. Place default prompt YAML in `prompts/` directory.
-7. Verify with an end-to-end test: upload a document (Phase 1), then query it (Phase 2) and confirm citations in the response.
+1. Run `sql/phase3_migration.sql` to create `eval_runs` and `eval_sample_results` tables with indexes and RLS.
+2. Install new Python dependencies (`ragas`, `deepeval`, `pandas`, `datasets`, `nest-asyncio`).
+3. Create the `eval/` directory structure with initial golden dataset.
+4. Create the `eval/config/thresholds.yaml` configuration file.
+5. Add Phase 3 environment variables (eval LLM judge, thresholds, Ragas telemetry opt-out).
+6. Add `tests/test_rag_evaluation.py` with DeepEval test cases.
+7. Add `.github/workflows/rag-evaluation.yml` with path filters.
+8. Store API keys (`OPENAI_API_KEY`, `COHERE_API_KEY`, `SUPABASE_*`) as GitHub Actions secrets.
+9. Run the evaluation manually once to establish a baseline score.
+10. Verify: Push a PR that modifies a prompt template → GitHub Actions triggers eval → results stored in DB.
 
 ---
 
-## 16. Phase 3 Preview (Next Steps)
+## 16. Phase 4 Preview (Next Steps)
 
-Phase 3 will build on this query pipeline by introducing:
+Phase 4 will build on the evaluated, quality-gated pipeline by introducing:
 
-1. **Golden Dataset Creation**: Curate 50-200 question-answer pairs with verified source grounding for evaluation.
-2. **Ragas Evaluation Pipeline**: Automated measurement of faithfulness, answer relevance, context precision, and context recall.
-3. **CI-Gated Quality Thresholds**: GitHub Actions integration that blocks merges if evaluation scores drop below configurable minimums (e.g., faithfulness < 0.85).
-4. **Regression Detection**: Track evaluation metrics over time to detect silent quality degradation.
+1. **AI SDK with Embeddable Chat Widget**: A lightweight JavaScript bundle that drops into any HTML page, connected to the RAG query pipeline via SSE streaming.
+2. **PDF Viewer with Bounding Box Overlays**: When a user clicks a citation, the SDK opens a PDF viewer at the exact page and highlights the source text using bounding box coordinates from Phase 1 metadata.
+3. **Multi-Deployment Architecture**: Support for Direct API Integration, Embeddable Widget, and Iframe Deployment.
+4. **Next.js Frontend + Vercel AI SDK**: Production dashboard for managing knowledge bases, viewing usage analytics, and monitoring evaluation scores.
+5. **Production Monitoring**: Online evaluation that samples live queries and runs Ragas metrics in the background, feeding back into the evaluation database for drift detection.
 
 ---
 
 ## 17. Key Insight
 
-> Phase 1 ensured the knowledge base is structured and searchable. Phase 2 ensures the answers are precise and trustworthy. The combination of hybrid retrieval (catching what vector search misses), cross-encoder reranking (filtering noise before generation), and citation enforcement (proving every claim) is what separates a demo from a production system. Without these layers, the LLM is guessing with context; with them, it's reasoning with evidence.
-
-
-
-
+> Phases 1 and 2 built a system that *can* produce correct, cited answers. Phase 3 builds the proof that it *does*. Without automated evaluation, every change to the pipeline — a new chunking strategy, a reworded prompt, a model upgrade — is a gamble. With CI-gated quality thresholds, the team can iterate aggressively on retrieval and generation quality knowing that regressions will be caught before they reach users. The golden dataset is the contract between the engineering team and the business: "These are the questions our system must answer correctly. Here's the mathematical proof that it does."

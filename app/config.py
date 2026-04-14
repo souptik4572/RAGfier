@@ -92,6 +92,28 @@ class Settings(BaseSettings):
     prompts_dir: str = Field(default="prompts", alias="PROMPTS_DIR")
     messages_file: str = Field(default="config/messages.json", alias="MESSAGES_FILE")
 
+    # --- Phase 3: evaluation pipeline ---
+    eval_dataset_path: str = Field(
+        default="eval/datasets/golden_v1.0.0.json", alias="EVAL_DATASET_PATH"
+    )
+    eval_thresholds_path: str = Field(
+        default="eval/config/thresholds.yaml", alias="EVAL_THRESHOLDS_PATH"
+    )
+    eval_llm_judge: str = Field(default="gpt-4o-mini", alias="EVAL_LLM_JUDGE")
+    eval_faithfulness_llm: str = Field(default="gpt-4o", alias="EVAL_FAITHFULNESS_LLM")
+    eval_timeout_seconds: int = Field(default=300, alias="EVAL_TIMEOUT_SECONDS")
+    eval_max_concurrency: int = Field(default=5, alias="EVAL_MAX_CONCURRENCY")
+    eval_latency_budget_ms: int = Field(default=5000, alias="EVAL_LATENCY_BUDGET_MS")
+    eval_reports_dir: str = Field(default="eval/reports", alias="EVAL_REPORTS_DIR")
+
+    eval_threshold_faithfulness: float = Field(default=0.85, alias="EVAL_THRESHOLD_FAITHFULNESS")
+    eval_threshold_answer_relevancy: float = Field(default=0.80, alias="EVAL_THRESHOLD_ANSWER_RELEVANCY")
+    eval_threshold_context_precision: float = Field(default=0.75, alias="EVAL_THRESHOLD_CONTEXT_PRECISION")
+    eval_threshold_context_recall: float = Field(default=0.75, alias="EVAL_THRESHOLD_CONTEXT_RECALL")
+    eval_threshold_citation_coverage: float = Field(default=0.90, alias="EVAL_THRESHOLD_CITATION_COVERAGE")
+    eval_threshold_decline_accuracy: float = Field(default=0.80, alias="EVAL_THRESHOLD_DECLINE_ACCURACY")
+    eval_threshold_latency_compliance: float = Field(default=0.90, alias="EVAL_THRESHOLD_LATENCY_COMPLIANCE")
+
     @field_validator("allowed_file_types", mode="before")
     @classmethod
     def split_csv(cls, v: object) -> object:
