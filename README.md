@@ -204,6 +204,81 @@ docker compose up --build
 `docker compose up --build` now runs the migration container first and only
 starts the API after pending migrations succeed.
 
+## Docker
+
+Use Docker when you want the API and migration runner to start together.
+
+### Prerequisites
+
+- Docker Desktop or Docker Engine with `docker compose`
+- A populated `.env` file based on `.env.example`
+- A valid `SUPABASE_DB_URL` Postgres connection string
+
+### Required `.env` values
+
+At minimum, set:
+
+```dotenv
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_DB_URL=postgresql://postgres:<url-encoded-password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_ANON_KEY=...
+OPENAI_API_KEY=...
+LLAMA_CLOUD_API_KEY=...
+```
+
+If your database password contains special characters such as `@`, `:`, `/`,
+`?`, or `#`, URL-encode the password before placing it in `SUPABASE_DB_URL`.
+
+### Start the stack
+
+```bash
+docker compose up --build
+```
+
+What happens:
+
+1. Docker builds the `api` image
+2. The `migrate` service validates `SUPABASE_DB_URL`
+3. Pending SQL migrations in `sql/migrations/` are applied
+4. The FastAPI app starts on `http://localhost:8000`
+
+### Start in the background
+
+```bash
+docker compose up --build -d
+```
+
+### View logs
+
+```bash
+docker compose logs -f
+```
+
+To follow only the API logs:
+
+```bash
+docker compose logs -f api
+```
+
+### Stop the stack
+
+```bash
+docker compose down
+```
+
+### Rebuild after Dockerfile or dependency changes
+
+```bash
+docker compose up --build --force-recreate
+```
+
+### Common Docker gotchas
+
+- Do not use `localhost`, `127.0.0.1`, or `::1` inside `SUPABASE_DB_URL` for the containerized migration step
+- For hosted Supabase, use `db.<project-ref>.supabase.co`
+- For a database running on your machine, use `host.docker.internal`
+
 ## Database Migrations
 
 Schema changes are managed exclusively through versioned SQL migrations in
@@ -266,8 +341,26 @@ Every migration file must include both sections:
 `docker compose up --build` runs:
 
 1. `migrate` service using `ghcr.io/amacneil/dbmate`
-2. `dbmate --wait up` against `SUPABASE_DB_URL`
+2. Validates `SUPABASE_DB_URL` inside the container and runs `dbmate up`
 3. `api` service only after migrations complete successfully
+
+### Troubleshooting Docker migrations
+
+If you see an error like:
+
+```text
+Error: unable to connect to database: dial tcp [::1]:5432: connect: connection refused
+```
+
+that usually means the migration container did not receive a usable
+`SUPABASE_DB_URL`, so `dbmate` fell back to `localhost` inside Docker.
+
+Check these exactly:
+
+1. `.env` contains `SUPABASE_DB_URL=postgres://...`
+2. The hostname inside `SUPABASE_DB_URL` is not `localhost`, `127.0.0.1`, or `::1`
+3. For hosted Supabase, use the project Postgres host like `db.<project-ref>.supabase.co`
+4. For a database running on your machine, use `host.docker.internal` instead of `localhost`
 
 ## Admin Reset Scripts
 

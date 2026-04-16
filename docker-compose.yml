@@ -5,12 +5,11 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${SUPABASE_DB_URL}
       DBMATE_MIGRATIONS_DIR: /db/sql/migrations
       DBMATE_NO_DUMP_SCHEMA: "true"
     volumes:
       - .:/db
-    command: ["--wait", "up"]
+    entrypoint: ["/bin/sh", "/db/scripts/run-dbmate-container.sh"]
     restart: "no"
 
   api:
@@ -22,6 +21,9 @@ services:
       - .env
     volumes:
       - ./app:/app/app
+      - ./eval:/app/eval
+      - ./config:/app/config
+      - ./prompts:/app/prompts
       - ./sql:/app/sql
     depends_on:
       migrate:

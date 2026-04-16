@@ -15,6 +15,9 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY app ./app
+COPY eval ./eval
+COPY config ./config
+COPY prompts ./prompts
 COPY sql ./sql
 
 EXPOSE 8000
