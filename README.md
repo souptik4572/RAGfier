@@ -94,44 +94,48 @@ Dashboard JWT Auth → Integrations + API Keys → /v1 Hosted API → KB-scoped 
 
 ## API Endpoints
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/platform/integrations` | Create a tenant-owned integration for hosted/API-key access |
-| `GET`  | `/platform/integrations` | List integrations for the authenticated tenant |
-| `POST` | `/platform/api-keys` | Create a per-integration API key; returns the secret once |
-| `GET`  | `/platform/api-keys` | List API keys for the authenticated tenant |
-| `POST` | `/platform/api-keys/{api_key_id}/revoke` | Revoke an API key |
-| `POST` | `/ingest` | Upload a PDF or Markdown file; returns `job_id` |
-| `GET`  | `/status/{job_id}` | Poll pipeline progress |
-| `POST` | `/query` | Hybrid retrieval → rerank → generation with resolved `[SOURCE_N]` citations |
-| `POST` | `/query/stream` | Same pipeline, streamed as SSE: `sources` → `token`… → `done` |
-| `POST` | `/v1/knowledge-bases` | Create a hosted knowledge base via API key |
-| `GET`  | `/v1/knowledge-bases` | List hosted knowledge bases available to the API key’s tenant |
-| `POST` | `/v1/documents/upload` | Upload a document into a specific knowledge base |
-| `GET`  | `/v1/documents` | List uploaded documents/jobs for the API key’s tenant |
-| `GET`  | `/v1/documents/{document_id}` | Fetch one document/job summary |
-| `DELETE` | `/v1/documents/{document_id}` | Delete a document and its stored chunks |
-| `POST` | `/v1/query` | Hosted KB-scoped query with request id and usage metadata |
-| `POST` | `/v1/query/stream` | Hosted SSE query API |
-| `POST` | `/v1/connectors/s3` | Create an S3 connector record |
-| `POST` | `/v1/connectors/supabase` | Create a Supabase connector record |
-| `POST` | `/v1/connectors/{id}/sync` | Create a manual connector sync job |
-| `GET`  | `/v1/jobs/{job_id}` | Poll a hosted ingestion job |
-| `GET`  | `/v1/usage` | List request-level usage rollups |
-| `GET`  | `/v1/audit-logs` | List hosted audit log entries |
-| `POST` | `/eval/run` | Start an evaluation run for the authenticated tenant and dataset version |
-| `GET`  | `/eval/runs` | List recent evaluation runs for the authenticated tenant |
-| `GET`  | `/eval/runs/{run_id}/samples` | Inspect per-sample results for a single evaluation run |
-| `GET`  | `/prompts` | List tenant + global prompt versions |
-| `POST` | `/prompts` | Create a new prompt version (auto-deactivates the previous active one) |
-| `GET`  | `/health` | Service health (Supabase, OpenAI, Cohere) |
+### Auth and tenant-scoping matrix
 
-All tenant-scoped endpoints require `Authorization: Bearer <jwt>` where the
-JWT contains `app_metadata.organization_id`. An `X-Tenant-Id` header override
-is accepted for local testing.
+| Method | Path | Auth mode | Tenant scope source | Purpose |
+|--------|------|-----------|---------------------|---------|
+| `POST` | `/auth/signup` | Public (no auth) | N/A | Create tenant + user and return JWT |
+| `POST` | `/auth/login` | Public (no auth) | N/A | Login and return JWT |
+| `GET`  | `/health` | Public (no auth) | N/A | Service health (Supabase, OpenAI, Cohere) |
+| `POST` | `/platform/integrations` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Create a tenant-owned integration for hosted/API-key access |
+| `GET`  | `/platform/integrations` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List integrations for the authenticated tenant |
+| `POST` | `/platform/api-keys` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Create a per-integration API key; returns the secret once |
+| `GET`  | `/platform/api-keys` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List API keys for the authenticated tenant |
+| `POST` | `/platform/api-keys/{api_key_id}/revoke` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Revoke an API key |
+| `POST` | `/ingest` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Upload a PDF or Markdown file; returns `job_id` |
+| `GET`  | `/status/{job_id}` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Poll pipeline progress |
+| `POST` | `/query` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Hybrid retrieval → rerank → generation with resolved `[SOURCE_N]` citations |
+| `POST` | `/query/stream` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Same pipeline, streamed as SSE: `sources` → `token`… → `done` |
+| `POST` | `/eval/run` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Start an evaluation run for the authenticated tenant and dataset version |
+| `GET`  | `/eval/runs` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List recent evaluation runs for the authenticated tenant |
+| `GET`  | `/eval/runs/{run_id}/samples` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Inspect per-sample results for a single evaluation run |
+| `GET`  | `/prompts` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List tenant + global prompt versions |
+| `POST` | `/prompts` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Create a new prompt version (auto-deactivates the previous active one) |
+| `POST` | `/v1/knowledge-bases` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create a hosted knowledge base via API key |
+| `GET`  | `/v1/knowledge-bases` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List hosted knowledge bases available to the API key’s tenant |
+| `POST` | `/v1/documents/upload` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Upload a document into a specific knowledge base |
+| `GET`  | `/v1/documents` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List uploaded documents/jobs for the API key’s tenant |
+| `GET`  | `/v1/documents/{document_id}` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Fetch one document/job summary |
+| `DELETE` | `/v1/documents/{document_id}` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Delete a document and its stored chunks |
+| `POST` | `/v1/query` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Hosted KB-scoped query with request id and usage metadata |
+| `POST` | `/v1/query/stream` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Hosted SSE query API |
+| `POST` | `/v1/connectors/s3` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create an S3 connector record |
+| `POST` | `/v1/connectors/supabase` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create a Supabase connector record |
+| `POST` | `/v1/connectors/{id}/sync` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create a manual connector sync job |
+| `GET`  | `/v1/jobs/{job_id}` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Poll a hosted ingestion job |
+| `GET`  | `/v1/usage` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List request-level usage rollups |
+| `GET`  | `/v1/audit-logs` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List hosted audit log entries |
 
-Hosted `/v1` endpoints use `Authorization: Bearer <api_key>` instead. Tenant
-scope is derived from the API key record, never from caller-supplied tenant ids.
+JWT-protected endpoints derive tenant context from
+`app_metadata.organization_id` in the bearer token. For local testing only,
+you can override tenant resolution with `X-Tenant-Id`.
+
+Hosted `/v1` endpoints never trust caller-provided tenant ids; tenant scope is
+resolved from the API key record (`api_keys.tenant_id`) in the database.
 
 ### `/query` response shape
 
