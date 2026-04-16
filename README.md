@@ -1,4 +1,4 @@
-# RAGfier — Hybrid RAG API + Evaluation Pipeline
+# RAGfier — Hosted RAG API, Platform, and Evaluation Pipeline
 
 Multi-tenant Retrieval-Augmented Generation backbone. Phase 1 ingests
 PDFs/Markdown into Supabase `pgvector` with full citation metadata and
@@ -8,7 +8,9 @@ reranking, and citation-enforced LLM generation with hallucination
 guardrails and SSE streaming. Phase 3 adds an automated evaluation
 pipeline: versioned golden datasets, Ragas-based scoring, custom RAG
 quality metrics, persisted evaluation history, `/eval` APIs, and a
-GitHub Actions quality gate.
+GitHub Actions quality gate. Phase 4 adds the first hosted-platform
+slice: API-key-based `/v1` APIs, knowledge bases, integrations, managed
+connector records, audit/request logging, and a server SDK.
 
 See [SPEC.md](SPEC.md) (Phase 3) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
 full technical specs, and [AGENTS.md](AGENTS.md) for coding conventions.
@@ -75,14 +77,48 @@ Golden Dataset → Live Query Pipeline → Ragas + Custom Metrics → Threshold 
 - **Runner + reports** — [eval/run.py](eval/run.py) and [eval/report.py](eval/report.py): executes the full evaluation concurrently, persists results, and writes JSON + Markdown reports under [eval/reports/](eval/reports/).
 - **Run history tools** — [eval/history.py](eval/history.py) and [eval/compare.py](eval/compare.py): CLI helpers for listing recent runs and comparing two runs side by side.
 
+### Hosted platform (Phase 4)
+
+```
+Dashboard JWT Auth → Integrations + API Keys → /v1 Hosted API → KB-scoped Query/Ingestion → Audit + Usage Logs
+```
+
+- **Platform auth** — [app/api/platform_auth.py](app/api/platform_auth.py): resolves `Authorization: Bearer <api_key>` into `(tenant_id, integration_id, api_key_id)` and enforces per-key scopes such as `query:read`, `documents:write`, and `analytics:read`.
+- **Dashboard platform management** — [app/api/platform.py](app/api/platform.py): JWT-authenticated control-plane endpoints for creating integrations, minting/revoking API keys, and listing platform credentials.
+- **Hosted `/v1` API** — [app/api/public_v1.py](app/api/public_v1.py): API-key-authenticated knowledge base, document, connector, query, streaming query, job, usage, and audit-log routes.
+- **Knowledge-base scoping** — [app/pipeline/query_pipeline.py](app/pipeline/query_pipeline.py), [app/pipeline/retriever_dense.py](app/pipeline/retriever_dense.py), and [app/pipeline/retriever_sparse.py](app/pipeline/retriever_sparse.py): retrieval is now scoped by both `tenant_id` and selected `knowledge_base_id(s)`.
+- **Extended ingestion metadata** — [app/pipeline/orchestrator.py](app/pipeline/orchestrator.py) and [app/pipeline/upserter.py](app/pipeline/upserter.py): ingestion records and document rows now carry `knowledge_base_id`, `source_type`, and `source_id`.
+- **Platform security helpers** — [app/utils/platform_security.py](app/utils/platform_security.py): HMAC hashes API keys at rest and encrypts connector configuration blobs.
+- **Observability helpers** — [app/utils/platform_observability.py](app/utils/platform_observability.py): writes `audit_logs` and `request_logs` rows for hosted operations.
+- **Server SDK** — [sdk/python/ragfier_sdk.py](sdk/python/ragfier_sdk.py): async SDK client for `/v1/query`, `/v1/query/stream`, uploads, job polling, KB listing, and connector sync triggers.
+
 ## API Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
+| `POST` | `/platform/integrations` | Create a tenant-owned integration for hosted/API-key access |
+| `GET`  | `/platform/integrations` | List integrations for the authenticated tenant |
+| `POST` | `/platform/api-keys` | Create a per-integration API key; returns the secret once |
+| `GET`  | `/platform/api-keys` | List API keys for the authenticated tenant |
+| `POST` | `/platform/api-keys/{api_key_id}/revoke` | Revoke an API key |
 | `POST` | `/ingest` | Upload a PDF or Markdown file; returns `job_id` |
 | `GET`  | `/status/{job_id}` | Poll pipeline progress |
 | `POST` | `/query` | Hybrid retrieval → rerank → generation with resolved `[SOURCE_N]` citations |
 | `POST` | `/query/stream` | Same pipeline, streamed as SSE: `sources` → `token`… → `done` |
+| `POST` | `/v1/knowledge-bases` | Create a hosted knowledge base via API key |
+| `GET`  | `/v1/knowledge-bases` | List hosted knowledge bases available to the API key’s tenant |
+| `POST` | `/v1/documents/upload` | Upload a document into a specific knowledge base |
+| `GET`  | `/v1/documents` | List uploaded documents/jobs for the API key’s tenant |
+| `GET`  | `/v1/documents/{document_id}` | Fetch one document/job summary |
+| `DELETE` | `/v1/documents/{document_id}` | Delete a document and its stored chunks |
+| `POST` | `/v1/query` | Hosted KB-scoped query with request id and usage metadata |
+| `POST` | `/v1/query/stream` | Hosted SSE query API |
+| `POST` | `/v1/connectors/s3` | Create an S3 connector record |
+| `POST` | `/v1/connectors/supabase` | Create a Supabase connector record |
+| `POST` | `/v1/connectors/{id}/sync` | Create a manual connector sync job |
+| `GET`  | `/v1/jobs/{job_id}` | Poll a hosted ingestion job |
+| `GET`  | `/v1/usage` | List request-level usage rollups |
+| `GET`  | `/v1/audit-logs` | List hosted audit log entries |
 | `POST` | `/eval/run` | Start an evaluation run for the authenticated tenant and dataset version |
 | `GET`  | `/eval/runs` | List recent evaluation runs for the authenticated tenant |
 | `GET`  | `/eval/runs/{run_id}/samples` | Inspect per-sample results for a single evaluation run |
@@ -93,6 +129,9 @@ Golden Dataset → Live Query Pipeline → Ragas + Custom Metrics → Threshold 
 All tenant-scoped endpoints require `Authorization: Bearer <jwt>` where the
 JWT contains `app_metadata.organization_id`. An `X-Tenant-Id` header override
 is accepted for local testing.
+
+Hosted `/v1` endpoints use `Authorization: Bearer <api_key>` instead. Tenant
+scope is derived from the API key record, never from caller-supplied tenant ids.
 
 ### `/query` response shape
 
@@ -144,6 +183,16 @@ The `sources` event lets a frontend render citation cards while tokens
 stream in. Declines emit a single synthetic `token` event followed by
 `done` with `declined: true`.
 
+### `/v1/query` response additions
+
+Hosted queries return the same answer/citation payload as `/query`, plus:
+
+- `request_id`: stable request identifier for auditing and support
+- `usage`: token counts and an estimated cost field
+
+Public request bodies accept `knowledge_base_ids`, `external_user_id`,
+`session_id`, and `tags` for tenant-side attribution.
+
 ### `/eval` workflow
 
 - `POST /eval/run` accepts a dataset version or path, pre-creates an `eval_runs` row, and schedules the evaluation in a background task.
@@ -156,12 +205,15 @@ stream in. Declines emit a single synthetic `token` event followed by
 RAGfier/
 ├── app/
 │   ├── main.py                  FastAPI app + lifespan
-│   ├── config.py                Pydantic Settings (Phase 1 + Phase 2 + Phase 3)
+│   ├── config.py                Pydantic Settings (Phase 1 + Phase 2 + Phase 3 + Phase 4)
 │   ├── api/
 │   │   ├── ingest.py            POST /ingest
 │   │   ├── status.py            GET /status/{job_id}
 │   │   ├── query.py             POST /query  (hybrid + rerank + generation)
 │   │   ├── query_stream.py      POST /query/stream  (SSE)
+│   │   ├── platform.py          JWT-authenticated integrations + API key management
+│   │   ├── platform_auth.py     API key resolution + scope enforcement
+│   │   ├── public_v1.py         Hosted /v1 API surface
 │   │   ├── eval.py              POST /eval/run, GET /eval/runs, GET /eval/runs/{id}/samples
 │   │   ├── prompts.py           GET/POST /prompts
 │   │   ├── health.py            GET /health
@@ -180,7 +232,7 @@ RAGfier/
 │   │   ├── citation_resolver.py [SOURCE_N] assembly + resolution
 │   │   └── query_pipeline.py    embed → retrieve → rerank → guardrail
 │   ├── models/                  schemas.py (Pydantic), database.py (Supabase clients)
-│   └── utils/                   logger, token_counter, prompt_loader
+│   └── utils/                   logger, token_counter, prompt_loader, platform_security, platform_observability
 ├── eval/
 │   ├── datasets/                versioned golden datasets + changelog
 │   ├── config/thresholds.yaml   evaluation thresholds + blocking rules
@@ -196,6 +248,9 @@ RAGfier/
 │   └── rag-evaluation.yml       CI quality gate for evaluation regressions
 ├── prompts/
 │   └── rag_generation_v1.yaml   default citation-enforced prompt
+├── sdk/
+│   └── python/
+│       └── ragfier_sdk.py       async hosted API client
 ├── sql/
 │   ├── admin/                   destructive manual reset SQL
 │   ├── migrations/              versioned SQL up/down migrations
@@ -207,7 +262,7 @@ RAGfier/
 │   ├── reset-environment.sh     purge bucket then truncate DB
 │   ├── truncate-all-tables.sh   destructive DB reset helper
 │   └── purge-supabase-bucket.py destructive Storage reset helper
-├── tests/                       40 tests including evaluation runner/API/custom metrics coverage
+├── tests/                       69 tests including hosted platform + SDK coverage
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
 └── .env.example
@@ -230,6 +285,8 @@ cp .env.example .env
 # Phase 3:  EVAL_DATASET_PATH, EVAL_THRESHOLDS_PATH, EVAL_LLM_JUDGE,
 #           EVAL_FAITHFULNESS_LLM, EVAL_MAX_CONCURRENCY,
 #           EVAL_LATENCY_BUDGET_MS, EVAL_REPORTS_DIR
+# Phase 4:  PLATFORM_API_KEY_SECRET, PLATFORM_ENCRYPTION_KEY,
+#           PLATFORM_API_KEY_PREFIX, PLATFORM_DEFAULT_BASE_URL
 
 # Non-sensitive defaults are versioned in:
 #   config/config.defaults.json
@@ -500,10 +557,12 @@ reranker — no network, no real API keys, no Cohere/`sentence-transformers`
 install required for the unit suite. The DeepEval suite is separate and
 intended for Phase 3 quality gating. See [tests/fakes.py](tests/fakes.py).
 
-Suite: **40 tests** — parser, chunker, embedder, ingestion pipeline, API,
+Suite: **69 tests** — parser, chunker, embedder, ingestion pipeline, API,
 RRF fusion, reranker fallback, generator (sync + streaming), citation
 resolver, prompt loader precedence, evaluation runner/API/custom metrics,
-and end-to-end `/query`, `/query/stream`, and `/prompts` round-trip.
+hosted platform auth, `/v1` knowledge bases/documents/connectors/query,
+SDK coverage, and end-to-end `/query`, `/query/stream`, and `/prompts`
+round-trip.
 
 ## Phase 3 Evaluation Workflow
 
@@ -546,9 +605,9 @@ python3 -m eval.compare --run-a <run-uuid> --run-b <run-uuid>
 
 ### Current scope boundary
 
-- Phase 3 is implemented as an offline evaluation and CI-gating system.
+- Phase 3 remains an offline evaluation and CI-gating system.
 - The checked-in dataset is still a seed corpus; the README does not claim the full 50+ manually reviewed golden set target has been reached yet.
-- Phase 4 items such as online evaluation, dashboards, AI SDK delivery, and PDF overlay UX are still out of scope.
+- Phase 4 now includes the hosted backend/API-key layer, but not a full dashboard UI, durable background workers for connector execution, browser/widget delivery, or PDF overlay UX yet.
 
 ## Metadata Schema
 
@@ -581,12 +640,71 @@ all of this on every `Citation` returned from `/query`.
   [sql/schema.sql](sql/schema.sql) and [sql/phase2_migration.sql](sql/phase2_migration.sql)
   filter on `tenant_id = auth.jwt() -> 'app_metadata' ->> 'organization_id'`.
 - `match_documents` and `match_documents_hybrid` both accept
-  `filter_tenant_id` for explicit server-side scoping — the `query_pipeline`
-  always passes the JWT-resolved tenant, so the LLM never sees cross-tenant
-  chunks.
+  `filter_tenant_id` and now support optional knowledge-base filters for
+  explicit server-side scoping — the query pipeline always passes the
+  resolved tenant, so the LLM never sees cross-tenant chunks.
 - `prompt_versions` supports tenant-specific overrides (`tenant_id = <uuid>`)
   alongside global prompts (`tenant_id IS NULL`); the loader prefers the
   tenant row when both exist.
+- Hosted `/v1` routes do not accept caller-controlled tenant identifiers.
+  Tenant scope is derived from the API key record, which also ties every
+  public request to an `integration_id` and `api_key_id`.
+
+## Hosted Platform
+
+Phase 4 introduces the first hosted control-plane and public API layer.
+
+### Data model additions
+
+- `knowledge_bases`: tenant-owned logical collections for retrieval and ingestion
+- `integrations`: named app installations or environments under a tenant
+- `api_keys`: per-integration keys with hashed secrets, scopes, expiry, status, and last-used timestamps
+- `connector_sources`: tenant-owned S3 or Supabase connector definitions with encrypted config blobs
+- `connector_sync_jobs`: manual sync jobs for connectors
+- `audit_logs`: actor/resource/action trail for hosted operations
+- `request_logs`: request-level usage and latency events
+- `usage_rollups`: aggregation target for operational analytics
+
+### Security model
+
+- Dashboard operators continue using JWT auth
+- Hosted SDK/API consumers use per-integration API keys
+- API keys are hashed at rest and only returned once on creation
+- Connector configs are encrypted before persistence
+- Public routes enforce per-key scopes such as `kb:read`, `documents:write`, `query:read`, and `analytics:read`
+
+### Current connector status
+
+- `POST /v1/connectors/s3` and `POST /v1/connectors/supabase` create managed source records
+- `POST /v1/connectors/{id}/sync` creates a manual sync job
+- External crawling/fetching workers are not implemented yet; this is the hosted schema/API foundation
+
+### Python SDK example
+
+```python
+import asyncio
+
+from sdk.python.ragfier_sdk import RagfierSDK
+
+
+async def main() -> None:
+    client = RagfierSDK(
+        api_key="rag_pk_xxxx.your-secret",
+        base_url="http://localhost:8000",
+    )
+    try:
+        response = await client.query(
+            query="What is the liability cap?",
+            knowledge_base_ids=["<knowledge-base-uuid>"],
+            match_count=5,
+        )
+        print(response["answer"])
+    finally:
+        await client.aclose()
+
+
+asyncio.run(main())
+```
 
 ## Prompt Management
 
@@ -641,5 +759,17 @@ hallucination defense on top of the relevance-threshold short-circuit.
 | 9 | Per-step latency tracking in response metadata | Done |
 | 10 | Phase 2 test suite (fusion, reranker, generator, citation resolver, E2E) | Done |
 
-Phase 4 items such as online evaluation, dashboards, AI SDK / chat widget,
-and PDF viewer overlays remain out of scope — see [SPEC.md](SPEC.md).
+## Phase 4 Deliverables — Status
+
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | Hosted `/v1` API with API-key auth | Done |
+| 2 | JWT dashboard platform endpoints for integrations and API keys | Done |
+| 3 | Knowledge-base abstraction and KB-scoped retrieval | Done |
+| 4 | Request/audit logging tables and API exposure | Done |
+| 5 | Connector source + sync job schema and APIs | Done (record/sync-job layer) |
+| 6 | Python server SDK | Done |
+| 7 | Secure API key hashing + encrypted connector config | Done |
+| 8 | Full dashboard UI | Not yet implemented |
+| 9 | Durable connector execution workers | Not yet implemented |
+| 10 | Browser/widget delivery + PDF overlay UX | Not yet implemented |

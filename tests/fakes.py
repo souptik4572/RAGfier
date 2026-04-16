@@ -24,6 +24,10 @@ class FakeQuery:
         self._payload = payload
         return self
 
+    def delete(self) -> "FakeQuery":
+        self._op = "delete"
+        return self
+
     def select(self, *_: Any, **__: Any) -> "FakeQuery":
         self._op = "select"
         return self
@@ -65,6 +69,11 @@ class FakeQuery:
                     if v == "now()":
                         continue
                     row[k] = v
+            return _Resp(matched)
+
+        if self._op == "delete":
+            matched = self._apply_filters(self._table.rows)
+            self._table.rows = [row for row in self._table.rows if row not in matched]
             return _Resp(matched)
 
         # select

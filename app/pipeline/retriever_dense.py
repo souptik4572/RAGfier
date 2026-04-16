@@ -22,6 +22,7 @@ class DenseRetriever:
         self,
         query_embedding: List[float],
         tenant_id: str,
+        knowledge_base_ids: Optional[List[str]] = None,
         top_n: int = 20,
     ) -> List[Dict[str, Any]]:
         try:
@@ -31,6 +32,7 @@ class DenseRetriever:
                     "query_embedding": query_embedding,
                     "match_count": top_n,
                     "filter_tenant_id": tenant_id,
+                    "filter_knowledge_base_ids": knowledge_base_ids,
                 },
             ).execute()
         except Exception as exc:

@@ -28,6 +28,7 @@ class SparseRetriever:
         self,
         query_text: str,
         tenant_id: str,
+        knowledge_base_ids: Optional[List[str]] = None,
         top_n: int = 20,
     ) -> List[Dict[str, Any]]:
         try:
@@ -37,6 +38,7 @@ class SparseRetriever:
                     "query_text": query_text,
                     "match_count": top_n,
                     "filter_tenant_id": tenant_id,
+                    "filter_knowledge_base_ids": knowledge_base_ids,
                 },
             ).execute()
         except Exception as exc:
@@ -69,6 +71,7 @@ class HybridRetriever:
         query_embedding: List[float],
         query_text: str,
         tenant_id: str,
+        knowledge_base_ids: Optional[List[str]] = None,
         match_count: int = 20,
         rrf_k: int = 60,
         dense_top_n: int = 20,
@@ -85,6 +88,7 @@ class HybridRetriever:
                     "dense_top_n": dense_top_n,
                     "sparse_top_n": sparse_top_n,
                     "filter_tenant_id": tenant_id,
+                    "filter_knowledge_base_ids": knowledge_base_ids,
                 },
             ).execute()
         except Exception as exc:
@@ -99,6 +103,7 @@ class HybridRetriever:
                     dense_results = DenseRetriever(client=self._client).retrieve(
                         query_embedding=query_embedding,
                         tenant_id=tenant_id,
+                        knowledge_base_ids=knowledge_base_ids,
                         top_n=match_count,
                     )
                 except DenseRetrievalError as dense_exc:

@@ -29,6 +29,10 @@ class DocumentUpserter:
         *,
         tenant_id: str,
         job_id: str,
+        knowledge_base_id: Optional[str] = None,
+        source_type: Optional[str] = None,
+        source_id: Optional[str] = None,
+        document_status: str = "active",
         chunks: List[PreparedChunk],
         embeddings: List[List[float]],
     ) -> int:
@@ -47,6 +51,10 @@ class DocumentUpserter:
                 self._build_record(
                     tenant_id=tenant_id,
                     job_id=job_id,
+                    knowledge_base_id=knowledge_base_id,
+                    source_type=source_type,
+                    source_id=source_id,
+                    document_status=document_status,
                     chunk=chunk,
                     embedding=embedding,
                 )
@@ -86,12 +94,20 @@ class DocumentUpserter:
         *,
         tenant_id: str,
         job_id: str,
+        knowledge_base_id: Optional[str],
+        source_type: Optional[str],
+        source_id: Optional[str],
+        document_status: str,
         chunk: PreparedChunk,
         embedding: List[float],
     ) -> dict[str, Any]:
         return {
             "tenant_id": tenant_id,
             "job_id": job_id,
+            "knowledge_base_id": knowledge_base_id,
+            "source_type": source_type,
+            "source_id": source_id,
+            "status": document_status,
             "content": chunk.content,
             "embedding": embedding,
             "metadata": chunk.metadata.model_dump(mode="json"),
