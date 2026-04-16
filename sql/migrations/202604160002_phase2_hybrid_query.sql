@@ -1,12 +1,5 @@
--- =============================================================
--- Legacy reference file.
--- Source of truth now lives in sql/migrations/ with dbmate up/down files.
--- Do not apply this file directly for normal development.
--- =============================================================
+-- migrate:up
 
--- -------------------------------------------------------------
--- 1. Full-text search column + GIN index on documents
--- -------------------------------------------------------------
 ALTER TABLE documents
   ADD COLUMN IF NOT EXISTS fts tsvector
   GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
@@ -15,9 +8,6 @@ CREATE INDEX IF NOT EXISTS idx_documents_fts
   ON documents
   USING gin (fts);
 
--- -------------------------------------------------------------
--- 2. Versioned prompts table
--- -------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS prompt_versions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
@@ -30,7 +20,6 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- One active prompt per (tenant, name). NULL tenant_id = global prompt.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_active
   ON prompt_versions (COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::UUID), name)
   WHERE is_active = true;
@@ -45,9 +34,6 @@ CREATE POLICY "tenant_isolation_prompts" ON prompt_versions
     OR tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
   );
 
--- -------------------------------------------------------------
--- 3. Hybrid retrieval function (dense + sparse + RRF)
--- -------------------------------------------------------------
 CREATE OR REPLACE FUNCTION match_documents_hybrid(
   query_embedding VECTOR(1536),
   query_text TEXT,
@@ -119,3 +105,13 @@ BEGIN
   LIMIT match_count;
 END;
 $$;
+
+-- migrate:down
+
+DROP FUNCTION IF EXISTS match_documents_hybrid(VECTOR(1536), TEXT, INT, INT, INT, INT, UUID);
+
+DROP POLICY IF EXISTS "tenant_isolation_prompts" ON prompt_versions;
+DROP TABLE IF EXISTS prompt_versions;
+
+DROP INDEX IF EXISTS idx_documents_fts;
+ALTER TABLE documents DROP COLUMN IF EXISTS fts;

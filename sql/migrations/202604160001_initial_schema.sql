@@ -1,15 +1,8 @@
--- =============================================================
--- Legacy reference file.
--- Source of truth now lives in sql/migrations/ with dbmate up/down files.
--- Do not apply this file directly for normal development.
--- =============================================================
+-- migrate:up
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- =============================================================
--- Table: tenants
--- =============================================================
 CREATE TABLE IF NOT EXISTS tenants (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
@@ -20,16 +13,12 @@ CREATE TABLE IF NOT EXISTS tenants (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- =============================================================
--- Table: ingestion_jobs
--- =============================================================
 CREATE TABLE IF NOT EXISTS ingestion_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   file_name TEXT NOT NULL,
   file_path TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
-    -- Valid statuses: pending | parsing | chunking | embedding | completed | failed
   total_chunks INTEGER DEFAULT 0,
   processed_chunks INTEGER DEFAULT 0,
   error_message TEXT,
@@ -38,9 +27,6 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- =============================================================
--- Table: documents
--- =============================================================
 CREATE TABLE IF NOT EXISTS documents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -51,9 +37,6 @@ CREATE TABLE IF NOT EXISTS documents (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- =============================================================
--- Indexes
--- =============================================================
 CREATE INDEX IF NOT EXISTS idx_documents_embedding
   ON documents
   USING hnsw (embedding vector_cosine_ops);
@@ -71,9 +54,6 @@ CREATE INDEX IF NOT EXISTS idx_documents_metadata
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_tenant_status
   ON ingestion_jobs (tenant_id, status);
 
--- =============================================================
--- Row-Level Security
--- =============================================================
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ingestion_jobs ENABLE ROW LEVEL SECURITY;
 
@@ -96,9 +76,6 @@ CREATE POLICY "tenant_isolation_jobs" ON ingestion_jobs
     tenant_id = (auth.jwt() -> 'app_metadata' ->> 'organization_id')::UUID
   );
 
--- =============================================================
--- RPC: match_documents
--- =============================================================
 CREATE OR REPLACE FUNCTION match_documents(
   query_embedding VECTOR(1536),
   match_count INT DEFAULT 5,
@@ -126,3 +103,14 @@ BEGIN
   LIMIT match_count;
 END;
 $$;
+
+-- migrate:down
+
+DROP FUNCTION IF EXISTS match_documents(VECTOR(1536), INT, UUID);
+
+DROP TABLE IF EXISTS documents;
+DROP TABLE IF EXISTS ingestion_jobs;
+DROP TABLE IF EXISTS tenants;
+
+DROP EXTENSION IF EXISTS vector CASCADE;
+DROP EXTENSION IF EXISTS "pgcrypto";
