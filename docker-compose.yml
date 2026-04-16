@@ -1,4 +1,17 @@
 services:
+  migrate:
+    image: ghcr.io/amacneil/dbmate:latest
+    container_name: ragfier-migrate
+    env_file:
+      - .env
+    environment:
+      DBMATE_MIGRATIONS_DIR: /db/sql/migrations
+      DBMATE_NO_DUMP_SCHEMA: "true"
+    volumes:
+      - .:/db
+    entrypoint: ["/bin/sh", "/db/scripts/run-dbmate-container.sh"]
+    restart: "no"
+
   api:
     build: .
     container_name: ragfier-api
@@ -8,6 +21,12 @@ services:
       - .env
     volumes:
       - ./app:/app/app
+      - ./eval:/app/eval
+      - ./config:/app/config
+      - ./prompts:/app/prompts
       - ./sql:/app/sql
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped

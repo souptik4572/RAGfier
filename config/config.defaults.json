@@ -20,5 +20,20 @@
   "reranker_provider": "cohere",
   "local_reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
   "default_prompt_name": "rag_generation_v1",
-  "prompts_dir": "prompts"
+  "prompts_dir": "prompts",
+  "eval_dataset_path": "eval/datasets/golden_v1.0.0.json",
+  "eval_thresholds_path": "eval/config/thresholds.yaml",
+  "eval_llm_judge": "gpt-4o-mini",
+  "eval_faithfulness_llm": "gpt-4o",
+  "eval_timeout_seconds": 300,
+  "eval_max_concurrency": 5,
+  "eval_latency_budget_ms": 5000,
+  "eval_reports_dir": "eval/reports",
+  "eval_threshold_faithfulness": 0.85,
+  "eval_threshold_answer_relevancy": 0.80,
+  "eval_threshold_context_precision": 0.75,
+  "eval_threshold_context_recall": 0.75,
+  "eval_threshold_citation_coverage": 0.90,
+  "eval_threshold_decline_accuracy": 0.80,
+  "eval_threshold_latency_compliance": 0.90
 }

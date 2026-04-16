@@ -1,0 +1,34 @@
+version: "1.0.0"
+
+# Core Ragas metrics
+faithfulness:
+  threshold: 0.85
+  blocking: true
+
+answer_relevancy:
+  threshold: 0.80
+  blocking: true
+
+context_precision:
+  threshold: 0.75
+  blocking: true
+
+context_recall:
+  threshold: 0.75
+  blocking: false          # Warning only — non-blocking initially
+
+# Custom metrics
+citation_coverage:
+  threshold: 0.90
+  blocking: true
+
+decline_accuracy:
+  threshold: 0.80
+  blocking: true
+
+latency_compliance:
+  threshold: 0.90
+  blocking: false          # Warning only
+
+# Aggregate rules
+min_passing_rate: 0.80      # ≥80% of samples must pass all blocking metrics

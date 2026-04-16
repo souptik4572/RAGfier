@@ -155,8 +155,16 @@ RAGfier/
 ├── prompts/
 │   └── rag_generation_v1.yaml   default citation-enforced prompt
 ├── sql/
-│   ├── schema.sql               Phase 1 schema
-│   └── phase2_migration.sql     fts column, prompt_versions, match_documents_hybrid
+│   ├── admin/                   destructive manual reset SQL
+│   ├── migrations/              versioned SQL up/down migrations
+│   ├── schema.sql               legacy Phase 1 reference snapshot
+│   ├── phase2_migration.sql     legacy Phase 2 reference snapshot
+│   └── phase3_migration.sql     legacy Phase 3 reference snapshot
+├── scripts/
+│   ├── run-migrations.sh        local dbmate wrapper (up/rollback/status/new)
+│   ├── reset-environment.sh     purge bucket then truncate DB
+│   ├── truncate-all-tables.sh   destructive DB reset helper
+│   └── purge-supabase-bucket.py destructive Storage reset helper
 ├── tests/                       37 tests (parser, chunker, embedder, pipeline, API, fusion, reranker, generator, citation resolver, prompt loader, query pipeline)
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
@@ -173,7 +181,7 @@ uv pip install -r requirements.txt
 
 # 2. Configure
 cp .env.example .env
-# Required: SUPABASE_*, OPENAI_API_KEY, LLAMA_CLOUD_API_KEY
+# Required: SUPABASE_*, SUPABASE_DB_URL, OPENAI_API_KEY, LLAMA_CLOUD_API_KEY
 # Phase 2:  COHERE_API_KEY (or set RERANKER_PROVIDER=local)
 #           GENERATION_MODEL, GENERATION_TEMPERATURE, GENERATION_MAX_TOKENS
 #           DENSE_TOP_N, SPARSE_TOP_N, RRF_K, RERANK_TOP_K, RELEVANCE_THRESHOLD
@@ -182,10 +190,9 @@ cp .env.example .env
 #   config/config.defaults.json
 # You can override any of them via env vars or .env
 
-# 3. Database
-#    Open Supabase SQL Editor and run, in order:
-#      sql/schema.sql              (Phase 1)
-#      sql/phase2_migration.sql    (Phase 2: fts, prompt_versions, match_documents_hybrid)
+# 3. Database migrations
+#    Apply all pending migrations:
+./scripts/run-migrations.sh up
 
 # 4. Run
 uvicorn app.main:app --reload --port 8000
@@ -194,8 +201,246 @@ uvicorn app.main:app --reload --port 8000
 docker compose up --build
 ```
 
-The Phase 2 migration is idempotent — the `fts` column is `GENERATED ALWAYS`,
-so it auto-populates for all existing rows with no backfill step.
+`docker compose up --build` now runs the migration container first and only
+starts the API after pending migrations succeed.
+
+## Docker
+
+Use Docker when you want the API and migration runner to start together.
+
+### Prerequisites
+
+- Docker Desktop or Docker Engine with `docker compose`
+- A populated `.env` file based on `.env.example`
+- A valid `SUPABASE_DB_URL` Postgres connection string
+
+### Required `.env` values
+
+At minimum, set:
+
+```dotenv
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_DB_URL=postgresql://postgres:<url-encoded-password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_ANON_KEY=...
+OPENAI_API_KEY=...
+LLAMA_CLOUD_API_KEY=...
+```
+
+If your database password contains special characters such as `@`, `:`, `/`,
+`?`, or `#`, URL-encode the password before placing it in `SUPABASE_DB_URL`.
+
+### Start the stack
+
+```bash
+docker compose up --build
+```
+
+What happens:
+
+1. Docker builds the `api` image
+2. The `migrate` service validates `SUPABASE_DB_URL`
+3. Pending SQL migrations in `sql/migrations/` are applied
+4. The FastAPI app starts on `http://localhost:8000`
+
+### Start in the background
+
+```bash
+docker compose up --build -d
+```
+
+### View logs
+
+```bash
+docker compose logs -f
+```
+
+To follow only the API logs:
+
+```bash
+docker compose logs -f api
+```
+
+### Stop the stack
+
+```bash
+docker compose down
+```
+
+### Rebuild after Dockerfile or dependency changes
+
+```bash
+docker compose up --build --force-recreate
+```
+
+### Common Docker gotchas
+
+- Do not use `localhost`, `127.0.0.1`, or `::1` inside `SUPABASE_DB_URL` for the containerized migration step
+- For hosted Supabase, use `db.<project-ref>.supabase.co`
+- For a database running on your machine, use `host.docker.internal`
+
+## Database Migrations
+
+Schema changes are managed exclusively through versioned SQL migrations in
+`sql/migrations/`. Do not apply `sql/schema.sql`, `sql/phase2_migration.sql`,
+or `sql/phase3_migration.sql` directly in Supabase for normal development.
+
+### Migration prerequisites
+
+Add `SUPABASE_DB_URL` to `.env`. This must be a Postgres connection string,
+not the REST API URL. Example shape:
+
+```dotenv
+SUPABASE_DB_URL=postgres://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
+```
+
+### Apply migrations locally
+
+```bash
+chmod +x scripts/run-migrations.sh
+./scripts/run-migrations.sh up
+```
+
+The helper script will:
+
+- Load `.env`
+- Read `SUPABASE_DB_URL`
+- Use a local `dbmate` install if available
+- Fall back to the official `ghcr.io/amacneil/dbmate` container if Docker is installed
+
+### Roll back the latest migration
+
+```bash
+./scripts/run-migrations.sh rollback
+```
+
+### Show migration status
+
+```bash
+./scripts/run-migrations.sh status
+```
+
+### Create a new migration
+
+```bash
+./scripts/run-migrations.sh new add_example_table
+```
+
+Every migration file must include both sections:
+
+```sql
+-- migrate:up
+-- forward changes
+
+-- migrate:down
+-- rollback changes
+```
+
+### Docker startup behavior
+
+`docker compose up --build` runs:
+
+1. `migrate` service using `ghcr.io/amacneil/dbmate`
+2. Validates `SUPABASE_DB_URL` inside the container and runs `dbmate up`
+3. `api` service only after migrations complete successfully
+
+### Troubleshooting Docker migrations
+
+If you see an error like:
+
+```text
+Error: unable to connect to database: dial tcp [::1]:5432: connect: connection refused
+```
+
+that usually means the migration container did not receive a usable
+`SUPABASE_DB_URL`, so `dbmate` fell back to `localhost` inside Docker.
+
+Check these exactly:
+
+1. `.env` contains `SUPABASE_DB_URL=postgres://...`
+2. The hostname inside `SUPABASE_DB_URL` is not `localhost`, `127.0.0.1`, or `::1`
+3. For hosted Supabase, use the project Postgres host like `db.<project-ref>.supabase.co`
+4. For a database running on your machine, use `host.docker.internal` instead of `localhost`
+
+## Admin Reset Scripts
+
+Two destructive reset utilities are included for explicit operational use.
+They are intentionally separate from `sql/migrations/` so they never run as
+part of normal schema migration startup.
+
+Before using any of these scripts:
+
+- Confirm you are targeting the correct Supabase project
+- Confirm `.env` points at the intended environment
+- Treat these commands as destructive and non-routine
+
+### Truncate all application tables
+
+SQL source:
+
+- [sql/admin/202604160101_truncate_all_tables.sql](sql/admin/202604160101_truncate_all_tables.sql)
+
+Wrapper:
+
+```bash
+chmod +x scripts/truncate-all-tables.sh
+./scripts/truncate-all-tables.sh --yes
+```
+
+Behavior:
+
+- Loads `.env`
+- Requires `SUPABASE_DB_URL`
+- Executes the SQL file with `psql`
+- Falls back to a disposable `postgres:16-alpine` container if `psql` is not installed
+- Truncates `eval_sample_results`, `eval_runs`, `prompt_versions`, `documents`, `ingestion_jobs`, and `tenants`
+
+Use this only in development, test, or carefully controlled admin workflows.
+
+### Empty the Supabase Storage bucket
+
+Storage deletion must go through the Supabase Storage API, not direct SQL.
+Supabase explicitly warns that deleting storage objects via SQL can orphan
+files in the bucket.
+
+Script:
+
+```bash
+python scripts/purge-supabase-bucket.py --yes
+```
+
+Optional bucket override:
+
+```bash
+python scripts/purge-supabase-bucket.py --yes --bucket documents
+```
+
+Behavior:
+
+- Loads `.env`
+- Requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+- Uses `SUPABASE_STORAGE_BUCKET` by default
+- Calls the official Supabase Storage API to empty the bucket
+
+### Full environment reset
+
+Wrapper:
+
+```bash
+chmod +x scripts/reset-environment.sh
+./scripts/reset-environment.sh --yes
+```
+
+Behavior:
+
+- Empties the configured Supabase Storage bucket first
+- Truncates all application tables second
+- Stops immediately if either step fails
+
+Equivalent manual order:
+
+1. `python3 scripts/purge-supabase-bucket.py --yes`
+2. `./scripts/truncate-all-tables.sh --yes`
 
 ## Testing
 

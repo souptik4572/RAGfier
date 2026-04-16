@@ -163,6 +163,72 @@ class HealthResponse(BaseModel):
     cohere: str = "not_configured"
 
 
+class EvalRunRequest(BaseModel):
+    dataset_version: Optional[str] = Field(default=None)
+    tenant_id: Optional[UUID] = Field(default=None)
+    trigger: str = Field(default="manual")
+
+
+class EvalRunAcceptedResponse(BaseModel):
+    message: str
+    eval_run_id: UUID
+    status: str
+
+
+class EvalRunScores(BaseModel):
+    faithfulness_avg: Optional[float] = None
+    answer_relevancy_avg: Optional[float] = None
+    context_precision_avg: Optional[float] = None
+    context_recall_avg: Optional[float] = None
+    citation_coverage_avg: Optional[float] = None
+    decline_accuracy_avg: Optional[float] = None
+    latency_compliance_avg: Optional[float] = None
+
+
+class EvalRunSummary(BaseModel):
+    id: UUID
+    dataset_version: str
+    trigger: str
+    git_sha: Optional[str] = None
+    git_branch: Optional[str] = None
+    status: str
+    passed: Optional[bool] = None
+    scores: EvalRunScores
+    total_samples: int = 0
+    failed_samples: int = 0
+    created_at: Optional[datetime] = None
+
+
+class EvalRunListResponse(BaseModel):
+    message: str
+    runs: List[EvalRunSummary]
+
+
+class EvalSampleScores(BaseModel):
+    faithfulness: Optional[float] = None
+    answer_relevancy: Optional[float] = None
+    context_precision: Optional[float] = None
+    context_recall: Optional[float] = None
+    citation_coverage: Optional[float] = None
+    decline_accuracy: Optional[float] = None
+
+
+class EvalSampleResult(BaseModel):
+    sample_id: str
+    category: Optional[str] = None
+    user_input: str
+    response: str
+    scores: EvalSampleScores
+    passed: Optional[bool] = None
+    failure_reasons: List[Any] = Field(default_factory=list)
+
+
+class EvalSampleListResponse(BaseModel):
+    message: str
+    run_id: UUID
+    samples: List[EvalSampleResult]
+
+
 class ParsedBlock(BaseModel):
     """A single parsed block from the document parser."""
 
