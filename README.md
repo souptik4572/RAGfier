@@ -1,13 +1,16 @@
-# RAGfier — Hybrid RAG API
+# RAGfier — Hybrid RAG API + Evaluation Pipeline
 
 Multi-tenant Retrieval-Augmented Generation backbone. Phase 1 ingests
 PDFs/Markdown into Supabase `pgvector` with full citation metadata and
 Row-Level Security. Phase 2 turns that index into a production-quality
 query pipeline: hybrid retrieval (dense + sparse + RRF), cross-encoder
 reranking, and citation-enforced LLM generation with hallucination
-guardrails and SSE streaming.
+guardrails and SSE streaming. Phase 3 adds an automated evaluation
+pipeline: versioned golden datasets, Ragas-based scoring, custom RAG
+quality metrics, persisted evaluation history, `/eval` APIs, and a
+GitHub Actions quality gate.
 
-See [SPEC.md](SPEC.md) (Phase 2) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
+See [SPEC.md](SPEC.md) (Phase 3) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
 full technical specs, and [AGENTS.md](AGENTS.md) for coding conventions.
 
 ## Configuration Model
@@ -56,6 +59,22 @@ Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ RRF) → Rerank → Gu
 - **Prompt loader** — [app/utils/prompt_loader.py](app/utils/prompt_loader.py): tenant-DB override > global-DB prompt > YAML file ([prompts/rag_generation_v1.yaml](prompts/rag_generation_v1.yaml)).
 - **Query orchestrator** — [app/pipeline/query_pipeline.py](app/pipeline/query_pipeline.py): shared `prepare_query()` that runs embed → hybrid retrieve → rerank → guardrail → context assembly, returning a `PreparedQuery` reused by both the sync and streaming endpoints. Tracks per-step latency in `RetrievalMetadata.latency_ms`.
 
+### Evaluation pipeline (Phase 3)
+
+```
+Golden Dataset → Live Query Pipeline → Ragas + Custom Metrics → Threshold Check → Reports + DB History + CI Gate
+```
+
+- **Golden dataset loader** — [eval/dataset.py](eval/dataset.py): loads versioned JSON datasets from [eval/datasets/](eval/datasets/) into typed `GoldenDataset` / `GoldenSample` objects.
+- **Seed dataset** — [eval/datasets/golden_v1.0.0.json](eval/datasets/golden_v1.0.0.json): checked-in Phase 3 starter corpus with version metadata and sample changelog support via [eval/datasets/CHANGELOG.md](eval/datasets/CHANGELOG.md). This is a seed set of 14 samples, not yet the 50+ sample target from the spec.
+- **Synthetic dataset generation** — [eval/generate.py](eval/generate.py): Ragas `TestsetGenerator` CLI that drafts tenant-specific samples from ingested chunks and writes them to a review-required JSON file.
+- **Pipeline adapter** — [eval/pipeline_adapter.py](eval/pipeline_adapter.py): runs the real Phase 2 query flow per sample and captures answer text, citations, retrieved contexts, latency, rerank score, model, and prompt version.
+- **Ragas runner** — [eval/ragas_runner.py](eval/ragas_runner.py): lazy, optional wrapper around Faithfulness, Answer Relevancy, Context Precision, and Context Recall using `gpt-4o-mini` by default.
+- **Custom metrics** — [eval/metrics/](eval/metrics/): adds citation coverage, decline accuracy for unanswerable prompts, and latency compliance on top of the core Ragas metrics.
+- **Thresholding + aggregation** — [eval/thresholds.py](eval/thresholds.py) and [eval/aggregator.py](eval/aggregator.py): combines per-sample scores into run-level pass/fail results using YAML-configured thresholds and a minimum passing-rate rule. `context_recall` and `latency_compliance` are currently warning-only in the default config.
+- **Runner + reports** — [eval/run.py](eval/run.py) and [eval/report.py](eval/report.py): executes the full evaluation concurrently, persists results, and writes JSON + Markdown reports under [eval/reports/](eval/reports/).
+- **Run history tools** — [eval/history.py](eval/history.py) and [eval/compare.py](eval/compare.py): CLI helpers for listing recent runs and comparing two runs side by side.
+
 ## API Endpoints
 
 | Method | Path | Purpose |
@@ -64,6 +83,9 @@ Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ RRF) → Rerank → Gu
 | `GET`  | `/status/{job_id}` | Poll pipeline progress |
 | `POST` | `/query` | Hybrid retrieval → rerank → generation with resolved `[SOURCE_N]` citations |
 | `POST` | `/query/stream` | Same pipeline, streamed as SSE: `sources` → `token`… → `done` |
+| `POST` | `/eval/run` | Start an evaluation run for the authenticated tenant and dataset version |
+| `GET`  | `/eval/runs` | List recent evaluation runs for the authenticated tenant |
+| `GET`  | `/eval/runs/{run_id}/samples` | Inspect per-sample results for a single evaluation run |
 | `GET`  | `/prompts` | List tenant + global prompt versions |
 | `POST` | `/prompts` | Create a new prompt version (auto-deactivates the previous active one) |
 | `GET`  | `/health` | Service health (Supabase, OpenAI, Cohere) |
@@ -122,18 +144,25 @@ The `sources` event lets a frontend render citation cards while tokens
 stream in. Declines emit a single synthetic `token` event followed by
 `done` with `declined: true`.
 
+### `/eval` workflow
+
+- `POST /eval/run` accepts a dataset version or path, pre-creates an `eval_runs` row, and schedules the evaluation in a background task.
+- `GET /eval/runs` returns aggregate scores such as `faithfulness_avg`, `answer_relevancy_avg`, `citation_coverage_avg`, and pass/fail status for the tenant.
+- `GET /eval/runs/{run_id}/samples` returns per-sample scores, responses, and failure reasons for drill-down debugging.
+
 ## Project Layout
 
 ```
 RAGfier/
 ├── app/
 │   ├── main.py                  FastAPI app + lifespan
-│   ├── config.py                Pydantic Settings (Phase 1 + Phase 2)
+│   ├── config.py                Pydantic Settings (Phase 1 + Phase 2 + Phase 3)
 │   ├── api/
 │   │   ├── ingest.py            POST /ingest
 │   │   ├── status.py            GET /status/{job_id}
 │   │   ├── query.py             POST /query  (hybrid + rerank + generation)
 │   │   ├── query_stream.py      POST /query/stream  (SSE)
+│   │   ├── eval.py              POST /eval/run, GET /eval/runs, GET /eval/runs/{id}/samples
 │   │   ├── prompts.py           GET/POST /prompts
 │   │   ├── health.py            GET /health
 │   │   └── auth.py              JWT tenant resolution
@@ -152,6 +181,19 @@ RAGfier/
 │   │   └── query_pipeline.py    embed → retrieve → rerank → guardrail
 │   ├── models/                  schemas.py (Pydantic), database.py (Supabase clients)
 │   └── utils/                   logger, token_counter, prompt_loader
+├── eval/
+│   ├── datasets/                versioned golden datasets + changelog
+│   ├── config/thresholds.yaml   evaluation thresholds + blocking rules
+│   ├── metrics/                 citation coverage, decline accuracy, latency compliance
+│   ├── run.py                   evaluation runner CLI
+│   ├── generate.py              synthetic dataset generation CLI
+│   ├── history.py               list recent evaluation runs
+│   ├── compare.py               compare two evaluation runs
+│   ├── ragas_runner.py          Ragas metric wrapper
+│   ├── pipeline_adapter.py      bridge to the production query pipeline
+│   └── report.py                JSON + Markdown report writer
+├── .github/workflows/
+│   └── rag-evaluation.yml       CI quality gate for evaluation regressions
 ├── prompts/
 │   └── rag_generation_v1.yaml   default citation-enforced prompt
 ├── sql/
@@ -165,7 +207,7 @@ RAGfier/
 │   ├── reset-environment.sh     purge bucket then truncate DB
 │   ├── truncate-all-tables.sh   destructive DB reset helper
 │   └── purge-supabase-bucket.py destructive Storage reset helper
-├── tests/                       37 tests (parser, chunker, embedder, pipeline, API, fusion, reranker, generator, citation resolver, prompt loader, query pipeline)
+├── tests/                       40 tests including evaluation runner/API/custom metrics coverage
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
 └── .env.example
@@ -185,6 +227,9 @@ cp .env.example .env
 # Phase 2:  COHERE_API_KEY (or set RERANKER_PROVIDER=local)
 #           GENERATION_MODEL, GENERATION_TEMPERATURE, GENERATION_MAX_TOKENS
 #           DENSE_TOP_N, SPARSE_TOP_N, RRF_K, RERANK_TOP_K, RELEVANCE_THRESHOLD
+# Phase 3:  EVAL_DATASET_PATH, EVAL_THRESHOLDS_PATH, EVAL_LLM_JUDGE,
+#           EVAL_FAITHFULNESS_LLM, EVAL_MAX_CONCURRENCY,
+#           EVAL_LATENCY_BUDGET_MS, EVAL_REPORTS_DIR
 
 # Non-sensitive defaults are versioned in:
 #   config/config.defaults.json
@@ -447,16 +492,63 @@ Equivalent manual order:
 ```bash
 pytest tests/ -v
 pytest tests/ --cov=app --cov-report=term-missing
+deepeval test run tests/test_rag_evaluation.py --verbose
 ```
 
 Tests use in-memory fakes for Supabase, OpenAI (sync + streaming), and the
 reranker — no network, no real API keys, no Cohere/`sentence-transformers`
-install required for the unit suite. See [tests/fakes.py](tests/fakes.py).
+install required for the unit suite. The DeepEval suite is separate and
+intended for Phase 3 quality gating. See [tests/fakes.py](tests/fakes.py).
 
-Suite: **37 tests** — parser, chunker, embedder, ingestion pipeline, API,
+Suite: **40 tests** — parser, chunker, embedder, ingestion pipeline, API,
 RRF fusion, reranker fallback, generator (sync + streaming), citation
-resolver, prompt loader precedence, and end-to-end `/query`, `/query/stream`,
-and `/prompts` round-trip.
+resolver, prompt loader precedence, evaluation runner/API/custom metrics,
+and end-to-end `/query`, `/query/stream`, and `/prompts` round-trip.
+
+## Phase 3 Evaluation Workflow
+
+### What is implemented
+
+- Versioned golden dataset support via [eval/datasets/golden_v1.0.0.json](eval/datasets/golden_v1.0.0.json).
+- Ragas-based scoring for faithfulness, answer relevancy, context precision, and context recall.
+- Custom evaluation metrics for citation coverage, decline accuracy, and latency compliance.
+- Threshold-based pass/fail aggregation with YAML config in [eval/config/thresholds.yaml](eval/config/thresholds.yaml).
+- Persisted evaluation history in `eval_runs` and `eval_sample_results`, added by [sql/migrations/202604160003_phase3_eval_pipeline.sql](sql/migrations/202604160003_phase3_eval_pipeline.sql).
+- Tenant-scoped evaluation APIs in [app/api/eval.py](app/api/eval.py).
+- CLI entry points for running, generating, listing, and comparing evaluation runs.
+- GitHub Actions workflow in [.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml).
+- Unit and integration coverage for the Phase 3 pieces in [tests/test_eval_runner.py](tests/test_eval_runner.py), [tests/test_eval_api.py](tests/test_eval_api.py), [tests/test_custom_metrics.py](tests/test_custom_metrics.py), and [tests/test_rag_evaluation.py](tests/test_rag_evaluation.py).
+
+### Local commands
+
+```bash
+# Run the evaluation runner against the default dataset
+python3 -m eval.run --tenant-id <tenant-uuid>
+
+# Run against a specific dataset file or version stem
+python3 -m eval.run --tenant-id <tenant-uuid> --dataset golden_v1.0.0
+
+# Generate a synthetic draft dataset from tenant documents
+python3 -m eval.generate --tenant-id <tenant-uuid> --size 50
+
+# List recent evaluation runs
+python3 -m eval.history --tenant-id <tenant-uuid> --last 10
+
+# Compare two runs
+python3 -m eval.compare --run-a <run-uuid> --run-b <run-uuid>
+```
+
+### CI quality gate
+
+- [.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml) runs on PRs that touch retrieval, query, prompt, SQL, eval, or evaluation-test files.
+- The workflow runs Phase 3 unit tests first, then `deepeval test run tests/test_rag_evaluation.py`.
+- Evaluation reports are uploaded as artifacts when present, and CI includes a post-processing step that attempts to attach git metadata to the latest stored run.
+
+### Current scope boundary
+
+- Phase 3 is implemented as an offline evaluation and CI-gating system.
+- The checked-in dataset is still a seed corpus; the README does not claim the full 50+ manually reviewed golden set target has been reached yet.
+- Phase 4 items such as online evaluation, dashboards, AI SDK delivery, and PDF overlay UX are still out of scope.
 
 ## Metadata Schema
 
@@ -549,5 +641,5 @@ hallucination defense on top of the relevance-threshold short-circuit.
 | 9 | Per-step latency tracking in response metadata | Done |
 | 10 | Phase 2 test suite (fusion, reranker, generator, citation resolver, E2E) | Done |
 
-Phases 3–4 (Ragas evaluation, CI quality gates, AI SDK / chat widget, PDF
-viewer with bbox overlays) remain out of scope — see [SPEC.md](SPEC.md) §16.
+Phase 4 items such as online evaluation, dashboards, AI SDK / chat widget,
+and PDF viewer overlays remain out of scope — see [SPEC.md](SPEC.md).
