@@ -12,6 +12,7 @@ from app.api import (
     eval as eval_api,
     health,
     ingest,
+    integrations,
     platform,
     prompts,
     public_v1,
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(query.router)
     app.include_router(query_stream.router)
     app.include_router(platform.router)
+    app.include_router(integrations.router)
     app.include_router(public_v1.router)
     app.include_router(prompts.router)
     app.include_router(eval_api.router)

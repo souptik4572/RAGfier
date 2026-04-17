@@ -22,6 +22,7 @@ from app.models.database import get_service_client
 from app.models.schemas import IngestResponse
 from app.pipeline.orchestrator import run_pipeline_task
 from app.utils.api_errors import build_response, raise_api_error
+from app.utils.integration_resolver import resolve_integration
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,9 +40,13 @@ async def ingest_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     document_title: Optional[str] = Form(default=None),
+    integration_id: Optional[str] = Form(default=None),
     auth: AuthContext = Depends(get_auth_context),
 ) -> IngestResponse:
     settings = get_settings()
+    client = get_service_client()
+    integration = resolve_integration(client, auth.tenant_id, integration_id)
+    resolved_integration_id = str(integration["id"])
 
     if not file.filename:
         raise_api_error(422, "ingest.file_name_required")
@@ -68,12 +73,11 @@ async def ingest_document(
         )
 
     job_id = str(uuid.uuid4())
-    storage_path = f"{auth.tenant_id}/{job_id}/{file.filename}"
+    storage_path = f"{auth.tenant_id}/{resolved_integration_id}/{job_id}/{file.filename}"
 
     # Upload the raw file to Supabase Storage (best-effort — if not
     # configured we still proceed to local processing).
     try:
-        client = get_service_client()
         client.storage.from_(settings.supabase_storage_bucket).upload(
             path=storage_path,
             file=contents,
@@ -97,14 +101,15 @@ async def ingest_document(
 
     # Create the ingestion_jobs row.
     try:
-        client = get_service_client()
         client.table("ingestion_jobs").insert(
             {
                 "id": job_id,
                 "tenant_id": auth.tenant_id,
+                "integration_id": resolved_integration_id,
                 "file_name": file.filename,
                 "file_path": storage_path,
                 "status": "pending",
+                "source_type": "upload",
                 "metadata": {"document_title": document_title} if document_title else {},
             }
         ).execute()
@@ -140,4 +145,5 @@ async def ingest_document(
         "ingest.accepted",
         job_id=uuid.UUID(job_id),
         status="pending",
+        integration_id=uuid.UUID(resolved_integration_id),
     )

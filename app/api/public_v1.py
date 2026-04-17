@@ -26,6 +26,8 @@ from app.models.schemas import (
     DocumentDeleteResponse,
     DocumentListResponse,
     DocumentSummary,
+    IntegrationQueryRequest,
+    IntegrationQueryResponse,
     JobStatusResponse,
     KnowledgeBaseCreateRequest,
     KnowledgeBaseListResponse,
@@ -61,7 +63,7 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/v1", tags=["platform-v1"])
 
 
-@router.post("/knowledge-bases", response_model=KnowledgeBaseSummary, status_code=201)
+@router.post("/knowledge-bases", response_model=KnowledgeBaseSummary, status_code=201, deprecated=True)
 async def create_knowledge_base(
     payload: KnowledgeBaseCreateRequest,
     auth: PlatformAuthContext = Depends(require_platform_context("kb:write")),
@@ -94,7 +96,7 @@ async def create_knowledge_base(
     return _kb_summary(row, "platform.knowledge_base_created")
 
 
-@router.get("/knowledge-bases", response_model=KnowledgeBaseListResponse)
+@router.get("/knowledge-bases", response_model=KnowledgeBaseListResponse, deprecated=True)
 async def list_knowledge_bases(
     auth: PlatformAuthContext = Depends(require_platform_context("kb:read")),
 ) -> KnowledgeBaseListResponse:
@@ -530,7 +532,267 @@ async def query_stream_v1(
     return EventSourceResponse(event_generator())
 
 
-@router.post("/connectors/s3", response_model=ConnectorSummary, status_code=201)
+@router.post(
+    "/query/integration",
+    response_model=IntegrationQueryResponse,
+    summary="Query via API key (integration-scoped flat endpoint)",
+)
+async def query_integration_flat(
+    payload: IntegrationQueryRequest,
+    auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
+) -> IntegrationQueryResponse:
+    """API-key-authenticated query endpoint scoped to the key's integration.
+
+    Accepts an optional ``integration_id`` body field for validation only —
+    if provided it must match the key's integration.
+    """
+    if payload.integration_id and str(payload.integration_id) != auth.integration_id:
+        raise_api_error(403, "platform_auth.integration_mismatch")
+
+    started = time.perf_counter()
+    client = get_service_client()
+    request_id = uuid.uuid4()
+    query_token_count = count_tokens(payload.query)
+
+    try:
+        prepared = await prepare_query(
+            query=payload.query,
+            tenant_id=auth.tenant_id,
+            integration_id=auth.integration_id,
+            match_count=payload.match_count,
+            rerank=payload.rerank,
+            prompt_name=payload.prompt_name,
+            client=client,
+        )
+    except QueryPipelineError as exc:
+        logger.error("v1.query_flat.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
+        await write_request_log_async(
+            client,
+            tenant_id=auth.tenant_id,
+            integration_id=auth.integration_id,
+            api_key_id=auth.api_key_id,
+            endpoint="/v1/query/integration",
+            method="POST",
+            status_code=500,
+            latency_ms=_elapsed_ms(started),
+            input_tokens=query_token_count,
+            error_code="pipeline_failed",
+        )
+        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
+
+    if prepared.declined:
+        stamp_total_latency(prepared)
+        usage = UsageMetadata(input_tokens=query_token_count)
+        usage.total_tokens = usage.input_tokens
+        await write_request_log_async(
+            client,
+            tenant_id=auth.tenant_id,
+            integration_id=auth.integration_id,
+            api_key_id=auth.api_key_id,
+            endpoint="/v1/query/integration",
+            method="POST",
+            status_code=200,
+            latency_ms=prepared.retrieval_metadata.latency_ms.total,
+            input_tokens=usage.input_tokens,
+            output_tokens=0,
+            metadata={"declined": True},
+        )
+        return build_response(
+            IntegrationQueryResponse,
+            "query.declined",
+            request_id=request_id,
+            query=payload.query,
+            answer=INSUFFICIENT_CONTEXT_MESSAGE,
+            citations=[],
+            retrieval_metadata=prepared.retrieval_metadata,
+            declined=True,
+            usage=usage.model_dump(mode="json"),
+        )
+
+    try:
+        generator = Generator()
+        gen_started = time.perf_counter()
+        answer = await generator.generate(
+            prompt=prepared.prompt,
+            context=prepared.context,
+            query=payload.query,
+        )
+    except GenerationError as exc:
+        await write_request_log_async(
+            client,
+            tenant_id=auth.tenant_id,
+            integration_id=auth.integration_id,
+            api_key_id=auth.api_key_id,
+            endpoint="/v1/query/integration",
+            method="POST",
+            status_code=500,
+            latency_ms=_elapsed_ms(started),
+            input_tokens=query_token_count,
+            error_code="generation_failed",
+        )
+        raise_api_error(500, "query.generation_failed", detail=str(exc))
+
+    prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
+    stamp_total_latency(prepared)
+    citations = resolve_citations(answer, prepared.final_chunks) if payload.include_sources else []
+    usage = _usage_from_texts_cached(query_token_count, answer)
+    await write_request_log_async(
+        client,
+        tenant_id=auth.tenant_id,
+        integration_id=auth.integration_id,
+        api_key_id=auth.api_key_id,
+        endpoint="/v1/query/integration",
+        method="POST",
+        status_code=200,
+        latency_ms=prepared.retrieval_metadata.latency_ms.total,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        metadata={
+            "external_user_id": payload.external_user_id,
+            "session_id": payload.session_id,
+            "tags": payload.tags,
+        },
+    )
+    return build_response(
+        IntegrationQueryResponse,
+        "query.completed",
+        request_id=request_id,
+        query=payload.query,
+        answer=answer,
+        citations=citations,
+        retrieval_metadata=prepared.retrieval_metadata,
+        declined=False,
+        usage=usage.model_dump(mode="json"),
+    )
+
+
+@router.post(
+    "/query/integration/stream",
+    summary="Stream query via API key (integration-scoped flat endpoint)",
+)
+async def query_integration_stream_flat(
+    payload: IntegrationQueryRequest,
+    auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
+) -> EventSourceResponse:
+    """API-key-authenticated streaming endpoint scoped to the key's integration."""
+    if payload.integration_id and str(payload.integration_id) != auth.integration_id:
+        raise_api_error(403, "platform_auth.integration_mismatch")
+
+    client = get_service_client()
+    request_id = str(uuid.uuid4())
+    started = time.perf_counter()
+    query_token_count = count_tokens(payload.query)
+
+    try:
+        prepared = await prepare_query(
+            query=payload.query,
+            tenant_id=auth.tenant_id,
+            integration_id=auth.integration_id,
+            match_count=payload.match_count,
+            rerank=payload.rerank,
+            prompt_name=payload.prompt_name,
+            client=client,
+        )
+    except QueryPipelineError as exc:
+        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
+
+    async def event_generator() -> AsyncIterator[dict[str, str]]:
+        citations = (
+            resolve_citations("", prepared.final_chunks, include_uncited=True)
+            if payload.include_sources
+            else []
+        )
+        yield {
+            "event": "sources",
+            "data": json.dumps(
+                success_payload(
+                    "query.sources_prepared",
+                    request_id=request_id,
+                    citations=[c.model_dump(mode="json") for c in citations],
+                )
+            ),
+        }
+
+        if prepared.declined:
+            stamp_total_latency(prepared)
+            await write_request_log_async(
+                client,
+                tenant_id=auth.tenant_id,
+                integration_id=auth.integration_id,
+                api_key_id=auth.api_key_id,
+                endpoint="/v1/query/integration/stream",
+                method="POST",
+                status_code=200,
+                latency_ms=prepared.retrieval_metadata.latency_ms.total,
+                input_tokens=query_token_count,
+                metadata={"declined": True},
+            )
+            yield {"event": "token", "data": INSUFFICIENT_CONTEXT_MESSAGE}
+            yield {
+                "event": "done",
+                "data": json.dumps(
+                    success_payload(
+                        "query.stream_declined",
+                        request_id=request_id,
+                        declined=True,
+                        retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
+                        usage=_usage_from_texts_cached(query_token_count, "").model_dump(mode="json"),
+                    )
+                ),
+            }
+            return
+
+        answer_parts: list[str] = []
+        try:
+            generator = Generator()
+            gen_started = time.perf_counter()
+            async for token in generator.stream(
+                prompt=prepared.prompt,
+                context=prepared.context,
+                query=payload.query,
+            ):
+                answer_parts.append(token)
+                yield {"event": "token", "data": token}
+        except GenerationError as exc:
+            yield {
+                "event": "error",
+                "data": json.dumps(success_payload("query.stream_generation_failed", detail=str(exc))),
+            }
+            return
+
+        prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
+        stamp_total_latency(prepared)
+        answer = "".join(answer_parts)
+        usage = _usage_from_texts_cached(query_token_count, answer)
+        await write_request_log_async(
+            client,
+            tenant_id=auth.tenant_id,
+            integration_id=auth.integration_id,
+            api_key_id=auth.api_key_id,
+            endpoint="/v1/query/integration/stream",
+            method="POST",
+            status_code=200,
+            latency_ms=prepared.retrieval_metadata.latency_ms.total,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
+        yield {
+            "event": "done",
+            "data": json.dumps(
+                success_payload(
+                    "query.stream_completed",
+                    request_id=request_id,
+                    declined=False,
+                    retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
+                    usage=usage.model_dump(mode="json"),
+                )
+            ),
+        }
+
+    return EventSourceResponse(event_generator())
+
+
+@router.post("/connectors/s3", response_model=ConnectorSummary, status_code=201, deprecated=True)
 async def create_s3_connector(
     payload: ConnectorCreateRequest,
     auth: PlatformAuthContext = Depends(require_platform_context("connectors:write")),
@@ -538,7 +800,7 @@ async def create_s3_connector(
     return _create_connector("s3", payload, auth)
 
 
-@router.post("/connectors/supabase", response_model=ConnectorSummary, status_code=201)
+@router.post("/connectors/supabase", response_model=ConnectorSummary, status_code=201, deprecated=True)
 async def create_supabase_connector(
     payload: ConnectorCreateRequest,
     auth: PlatformAuthContext = Depends(require_platform_context("connectors:write")),
@@ -546,7 +808,7 @@ async def create_supabase_connector(
     return _create_connector("supabase", payload, auth)
 
 
-@router.post("/connectors/{connector_id}/sync", response_model=ConnectorSyncResponse, status_code=202)
+@router.post("/connectors/{connector_id}/sync", response_model=ConnectorSyncResponse, status_code=202, deprecated=True)
 async def trigger_connector_sync(
     connector_id: UUID,
     auth: PlatformAuthContext = Depends(require_platform_context("connectors:write")),

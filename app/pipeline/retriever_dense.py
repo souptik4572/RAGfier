@@ -24,6 +24,7 @@ class DenseRetriever:
         query_embedding: List[float],
         tenant_id: str,
         knowledge_base_ids: Optional[List[str]] = None,
+        integration_id: Optional[str] = None,
         top_n: int = 20,
     ) -> List[Dict[str, Any]]:
         params = {
@@ -31,6 +32,7 @@ class DenseRetriever:
             "match_count": top_n,
             "filter_tenant_id": tenant_id,
             "filter_knowledge_base_ids": knowledge_base_ids,
+            "filter_integration_id": integration_id,
         }
         try:
             # supabase-py is sync under the hood — offload to a worker thread

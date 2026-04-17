@@ -9,12 +9,14 @@ import httpx
 from fastapi import APIRouter, Header, status
 
 from app.config import get_settings
+from app.models.database import get_service_client
 from app.models.schemas import (
     AuthTokenResponse,
     TenantLoginRequest,
     TenantSignupRequest,
 )
 from app.utils.api_errors import raise_api_error, with_message
+from app.utils.integration_resolver import get_or_create_default_integration
 from app.utils.logger import get_logger
 from app.utils.messages import get_message
 
@@ -250,9 +252,13 @@ async def signup_tenant(payload: TenantSignupRequest) -> AuthTokenResponse:
 
     try:
         tenant = await _create_tenant(payload.tenant_name, tenant_slug)
-        await _create_auth_user(payload.email, payload.password, str(tenant["id"]))
+        tenant_id = str(tenant["id"])
+        await _create_auth_user(payload.email, payload.password, tenant_id)
         token_body = await _password_sign_in(payload.email, payload.password)
-        response = _build_token_response(token_body, fallback_tenant_id=str(tenant["id"]))
+        response = _build_token_response(token_body, fallback_tenant_id=tenant_id)
+        # Ensure the default global integration exists before returning.
+        db_client = get_service_client()
+        get_or_create_default_integration(db_client, tenant_id)
     except SupabaseAuthError as exc:
         logger.error(
             "auth.signup_failed",

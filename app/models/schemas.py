@@ -14,6 +14,7 @@ class IngestResponse(BaseModel):
     job_id: UUID
     status: JobStatus
     message: str
+    integration_id: Optional[UUID] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -30,6 +31,7 @@ class JobStatusResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1)
+    integration_id: Optional[UUID] = None
     match_count: int = Field(default=5, ge=1, le=50)
     rerank: bool = Field(default=True)
     include_sources: bool = Field(default=True)
@@ -350,13 +352,14 @@ class QueryRequestV1(BaseModel):
 
 
 class UploadDocumentResponse(IngestResponse):
-    knowledge_base_id: UUID
+    knowledge_base_id: Optional[UUID] = None
 
 
 class DocumentSummary(BaseModel):
     message: str = ""
     id: str
     tenant_id: UUID
+    integration_id: Optional[UUID] = None
     knowledge_base_id: Optional[UUID] = None
     file_name: str
     document_title: Optional[str] = None
@@ -438,3 +441,26 @@ class UsageBucket(BaseModel):
 class UsageResponse(BaseModel):
     message: str
     buckets: List[UsageBucket]
+
+
+class IntegrationQueryRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    integration_id: Optional[UUID] = None
+    match_count: int = Field(default=5, ge=1, le=50)
+    rerank: bool = Field(default=True)
+    include_sources: bool = Field(default=True)
+    prompt_name: Optional[str] = Field(default=None)
+    external_user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class IntegrationQueryResponse(BaseModel):
+    message: str
+    request_id: UUID
+    query: str
+    answer: str
+    citations: List[Citation] = Field(default_factory=list)
+    retrieval_metadata: RetrievalMetadata
+    declined: bool = False
+    usage: UsageMetadata = Field(default_factory=UsageMetadata)

@@ -1,0 +1,119 @@
+{
+  "run_id": "f1d493b4-ed60-485e-a10f-e85600c99094",
+  "dataset_version": "test_v1",
+  "git_sha": null,
+  "summary": {
+    "passed": false,
+    "total_samples": 2,
+    "failed_samples": 2,
+    "passing_rate": 0.0,
+    "averages": {
+      "faithfulness": 0.4,
+      "answer_relevancy": 0.5,
+      "context_precision": 0.4,
+      "context_recall": 0.4,
+      "citation_coverage": 0.0,
+      "decline_accuracy": 0.5,
+      "latency_compliance": 0.5
+    },
+    "failure_reasons": [
+      {
+        "metric": "faithfulness",
+        "score": 0.4,
+        "threshold": 0.85
+      },
+      {
+        "metric": "answer_relevancy",
+        "score": 0.5,
+        "threshold": 0.8
+      },
+      {
+        "metric": "context_precision",
+        "score": 0.4,
+        "threshold": 0.75
+      },
+      {
+        "metric": "citation_coverage",
+        "score": 0.0,
+        "threshold": 0.9
+      },
+      {
+        "metric": "decline_accuracy",
+        "score": 0.5,
+        "threshold": 0.8
+      },
+      {
+        "metric": "passing_rate",
+        "score": 0.0,
+        "threshold": 0.8
+      }
+    ]
+  },
+  "samples": [
+    {
+      "sample_id": "gs-001",
+      "category": "exact_match",
+      "user_input": "What is the liability cap?",
+      "response": "The cap is a lot of money.",
+      "retrieved_contexts": [
+        "ctx a",
+        "ctx b"
+      ],
+      "reference": "$1,000,000",
+      "scores": {
+        "faithfulness": 0.4,
+        "answer_relevancy": 0.5,
+        "context_precision": 0.4,
+        "context_recall": 0.4,
+        "citation_coverage": 0.0,
+        "decline_accuracy": 1.0,
+        "latency_compliance": 0.0
+      },
+      "latency_ms": 7000,
+      "num_chunks_retrieved": 2,
+      "top_rerank_score": 0.88,
+      "model_used": "gpt-4o",
+      "prompt_version": "rag_generation_v1:v1",
+      "passed": false,
+      "failure_reasons": [
+        "faithfulness 0.40 < 0.85",
+        "answer_relevancy 0.50 < 0.80",
+        "context_precision 0.40 < 0.75",
+        "citation_coverage 0.00 < 0.90"
+      ]
+    },
+    {
+      "sample_id": "gs-002",
+      "category": "unanswerable",
+      "user_input": "What is the CEO's favourite colour?",
+      "response": "The CEO's favourite colour is blue.",
+      "retrieved_contexts": [
+        "ctx a",
+        "ctx b"
+      ],
+      "reference": "DECLINE: not in documents",
+      "scores": {
+        "faithfulness": 0.4,
+        "answer_relevancy": 0.5,
+        "context_precision": 0.4,
+        "context_recall": 0.4,
+        "citation_coverage": 0.0,
+        "decline_accuracy": 0.0,
+        "latency_compliance": 1.0
+      },
+      "latency_ms": 900,
+      "num_chunks_retrieved": 2,
+      "top_rerank_score": 0.88,
+      "model_used": "gpt-4o",
+      "prompt_version": "rag_generation_v1:v1",
+      "passed": false,
+      "failure_reasons": [
+        "faithfulness 0.40 < 0.85",
+        "answer_relevancy 0.50 < 0.80",
+        "context_precision 0.40 < 0.75",
+        "citation_coverage 0.00 < 0.90",
+        "decline_accuracy 0.00 < 0.80"
+      ]
+    }
+  ]
+}
