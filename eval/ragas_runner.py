@@ -7,6 +7,7 @@ monkey-patch `score_sample` to avoid paying for LLM-as-judge calls.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.config import get_settings
@@ -94,16 +95,24 @@ class RagasRunner:
             reference=reference,
         )
 
+        # Run every metric concurrently — each one is an independent
+        # LLM-as-judge call, so sequential `await` on four metrics costs
+        # 4× the wall-time of the slowest call. `gather(return_exceptions=
+        # True)` keeps a failure in one metric from poisoning the others.
+        names = list(self._metrics.keys())
+        results = await asyncio.gather(
+            *(self._metrics[name].single_turn_ascore(sample) for name in names),
+            return_exceptions=True,
+        )
         scores: RagasMetrics = {}
-        for name, metric in self._metrics.items():
-            try:
-                raw = await metric.single_turn_ascore(sample)
-                scores[name] = _safe_float(raw)
-            except Exception as exc:  # noqa: BLE001
+        for name, result in zip(names, results):
+            if isinstance(result, Exception):
                 logger.warning(
-                    "ragas.metric_failed", metric=name, error=str(exc)
+                    "ragas.metric_failed", metric=name, error=str(result)
                 )
                 scores[name] = None
+            else:
+                scores[name] = _safe_float(result)
         return scores
 
 

@@ -22,6 +22,14 @@
     "signup_failed": "Signup failed",
     "login_failed": "Login failed"
   },
+  "platform_auth": {
+    "missing_api_key": "Missing API key bearer token",
+    "invalid_api_key": "Invalid API key",
+    "api_key_inactive": "API key is inactive",
+    "api_key_expired": "API key has expired",
+    "insufficient_scope": "API key does not have the required scope",
+    "lookup_failed": "Failed to resolve API key"
+  },
   "ingest": {
     "accepted": "Ingestion pipeline started",
     "file_name_required": "File must have a name.",
@@ -59,5 +67,27 @@
     "dataset_not_found": "Evaluation dataset not found.",
     "run_not_found": "Evaluation run not found.",
     "run_forbidden": "Evaluation run does not belong to this tenant."
+  },
+  "platform": {
+    "integration_created": "Integration created successfully",
+    "integrations_listed": "Integrations retrieved successfully",
+    "api_key_created": "API key created successfully",
+    "api_keys_listed": "API keys retrieved successfully",
+    "api_key_revoked": "API key revoked successfully",
+    "integration_not_found": "Integration not found for this tenant.",
+    "api_key_not_found": "API key not found for this tenant.",
+    "knowledge_base_created": "Knowledge base created successfully",
+    "knowledge_bases_listed": "Knowledge bases retrieved successfully",
+    "knowledge_base_not_found": "Knowledge base not found for this tenant.",
+    "document_uploaded": "Document upload accepted",
+    "documents_listed": "Documents retrieved successfully",
+    "document_not_found": "Document not found for this tenant.",
+    "document_deleted": "Document deleted successfully",
+    "connector_created": "Connector created successfully",
+    "connector_not_found": "Connector not found for this tenant.",
+    "connector_sync_started": "Connector sync started successfully",
+    "job_fetched": "Job retrieved successfully",
+    "usage_listed": "Usage metrics retrieved successfully",
+    "audit_logs_listed": "Audit logs retrieved successfully"
   }
 }

@@ -98,6 +98,13 @@ class RetrievalMetadata(BaseModel):
     latency_ms: LatencyBreakdown = Field(default_factory=LatencyBreakdown)
 
 
+class UsageMetadata(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+
+
 class HybridQueryResponse(BaseModel):
     message: str
     query: str
@@ -105,6 +112,11 @@ class HybridQueryResponse(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
     retrieval_metadata: RetrievalMetadata
     declined: bool = False
+
+
+class QueryResponseV1(HybridQueryResponse):
+    request_id: UUID
+    usage: UsageMetadata = Field(default_factory=UsageMetadata)
 
 
 class PromptCreateRequest(BaseModel):
@@ -244,3 +256,185 @@ class PreparedChunk(BaseModel):
 
     content: str
     metadata: ChunkMetadata
+
+
+KeyScope = str
+
+
+class IntegrationCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    environment: str = Field(default="production", min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class IntegrationSummary(BaseModel):
+    message: str = ""
+    id: UUID
+    tenant_id: UUID
+    name: str
+    environment: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+
+
+class IntegrationListResponse(BaseModel):
+    message: str
+    integrations: List[IntegrationSummary]
+
+
+class ApiKeyCreateRequest(BaseModel):
+    integration_id: UUID
+    name: str = Field(..., min_length=1)
+    scopes: List[KeyScope] = Field(default_factory=list, min_length=1)
+    expires_at: Optional[datetime] = None
+
+
+class ApiKeySummary(BaseModel):
+    message: str = ""
+    id: UUID
+    tenant_id: UUID
+    integration_id: UUID
+    name: str
+    prefix: str
+    scopes: List[KeyScope] = Field(default_factory=list)
+    status: str
+    expires_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class ApiKeyCreateResponse(ApiKeySummary):
+    secret: str
+
+
+class ApiKeyListResponse(BaseModel):
+    message: str
+    api_keys: List[ApiKeySummary]
+
+
+class KnowledgeBaseCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    slug: Optional[str] = Field(default=None, min_length=1)
+    description: Optional[str] = None
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeBaseSummary(BaseModel):
+    message: str = ""
+    id: UUID
+    tenant_id: UUID
+    name: str
+    slug: str
+    description: Optional[str] = None
+    status: str
+    settings: dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+
+
+class KnowledgeBaseListResponse(BaseModel):
+    message: str
+    knowledge_bases: List[KnowledgeBaseSummary]
+
+
+class QueryRequestV1(BaseModel):
+    query: str = Field(..., min_length=1)
+    knowledge_base_ids: List[UUID] = Field(..., min_length=1)
+    match_count: int = Field(default=5, ge=1, le=50)
+    rerank: bool = Field(default=True)
+    include_sources: bool = Field(default=True)
+    stream: bool = Field(default=False)
+    prompt_name: Optional[str] = Field(default=None)
+    external_user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class UploadDocumentResponse(IngestResponse):
+    knowledge_base_id: UUID
+
+
+class DocumentSummary(BaseModel):
+    message: str = ""
+    id: str
+    tenant_id: UUID
+    knowledge_base_id: Optional[UUID] = None
+    file_name: str
+    document_title: Optional[str] = None
+    source_type: Optional[str] = None
+    source_id: Optional[UUID] = None
+    status: str
+    chunk_count: int = 0
+    created_at: Optional[datetime] = None
+
+
+class DocumentListResponse(BaseModel):
+    message: str
+    documents: List[DocumentSummary]
+
+
+class DocumentDeleteResponse(BaseModel):
+    message: str
+    document_id: str
+    deleted_chunks: int
+
+
+class ConnectorCreateRequest(BaseModel):
+    knowledge_base_id: UUID
+    name: str = Field(..., min_length=1)
+    bucket: Optional[str] = None
+    prefix: Optional[str] = None
+    storage_bucket: Optional[str] = None
+    path_prefix: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorSummary(BaseModel):
+    message: str = ""
+    id: UUID
+    tenant_id: UUID
+    knowledge_base_id: UUID
+    type: str
+    name: str
+    status: str
+    config_summary: dict[str, Any] = Field(default_factory=dict)
+    sync_mode: str
+    last_synced_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class ConnectorSyncResponse(BaseModel):
+    message: str
+    sync_job_id: UUID
+    status: str
+
+
+class AuditLogEntry(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    actor_type: str
+    actor_id: Optional[str] = None
+    action: str
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+
+
+class AuditLogListResponse(BaseModel):
+    message: str
+    audit_logs: List[AuditLogEntry]
+
+
+class UsageBucket(BaseModel):
+    window_start: Optional[datetime] = None
+    request_count: int = 0
+    success_count: int = 0
+    error_count: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    avg_latency_ms: float = 0.0
+
+
+class UsageResponse(BaseModel):
+    message: str
+    buckets: List[UsageBucket]

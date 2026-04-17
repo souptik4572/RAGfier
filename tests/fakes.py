@@ -24,6 +24,10 @@ class FakeQuery:
         self._payload = payload
         return self
 
+    def delete(self) -> "FakeQuery":
+        self._op = "delete"
+        return self
+
     def select(self, *_: Any, **__: Any) -> "FakeQuery":
         self._op = "select"
         return self
@@ -35,6 +39,10 @@ class FakeQuery:
     def is_(self, column: str, value: Any) -> "FakeQuery":
         # Supabase uses is_("col", "null") to match NULL.
         self._filters.append(("is", column, value))
+        return self
+
+    def in_(self, column: str, values: Any) -> "FakeQuery":
+        self._filters.append(("in", column, list(values)))
         return self
 
     def limit(self, n: int) -> "FakeQuery":
@@ -67,6 +75,11 @@ class FakeQuery:
                     row[k] = v
             return _Resp(matched)
 
+        if self._op == "delete":
+            matched = self._apply_filters(self._table.rows)
+            self._table.rows = [row for row in self._table.rows if row not in matched]
+            return _Resp(matched)
+
         # select
         matched = self._apply_filters(self._table.rows)
         if self._limit is not None:
@@ -83,6 +96,9 @@ class FakeQuery:
                     result = [r for r in result if r.get(col) is None]
                 else:
                     result = [r for r in result if r.get(col) == val]
+            elif op == "in":
+                allowed = set(val)
+                result = [r for r in result if r.get(col) in allowed]
         return result
 
 

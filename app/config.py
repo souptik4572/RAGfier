@@ -92,6 +92,18 @@ class Settings(BaseSettings):
     prompts_dir: str = Field(default="prompts", alias="PROMPTS_DIR")
     messages_file: str = Field(default="config/messages.json", alias="MESSAGES_FILE")
 
+    # --- Phase 4: hosted platform + SDK ---
+    platform_api_key_secret: str = Field(
+        default="dev-platform-api-key-secret",
+        alias="PLATFORM_API_KEY_SECRET",
+    )
+    platform_api_key_prefix: str = Field(default="rag_pk", alias="PLATFORM_API_KEY_PREFIX")
+    platform_encryption_key: str = Field(default="", alias="PLATFORM_ENCRYPTION_KEY")
+    platform_default_base_url: str = Field(
+        default="http://localhost:8000",
+        alias="PLATFORM_DEFAULT_BASE_URL",
+    )
+
     # --- Phase 3: evaluation pipeline ---
     eval_dataset_path: str = Field(
         default="eval/datasets/golden_v1.0.0.json", alias="EVAL_DATASET_PATH"

@@ -7,7 +7,18 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api import auth, eval as eval_api, health, ingest, prompts, query, query_stream, status
+from app.api import (
+    auth,
+    eval as eval_api,
+    health,
+    ingest,
+    platform,
+    prompts,
+    public_v1,
+    query,
+    query_stream,
+    status,
+)
 from app.config import get_settings
 from app.utils.api_errors import error_payload
 from app.utils.logger import configure_logging, get_logger
@@ -67,6 +78,8 @@ def create_app() -> FastAPI:
     app.include_router(status.router)
     app.include_router(query.router)
     app.include_router(query_stream.router)
+    app.include_router(platform.router)
+    app.include_router(public_v1.router)
     app.include_router(prompts.router)
     app.include_router(eval_api.router)
     return app

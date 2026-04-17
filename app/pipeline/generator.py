@@ -12,6 +12,7 @@ from tenacity import (
 )
 
 from app.config import get_settings
+from app.models.database import get_async_openai_client
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,9 +30,10 @@ class Generator:
         if client is not None:
             self._client = client
         else:
-            if not settings.openai_api_key:
-                raise GenerationError("OPENAI_API_KEY is not configured.")
-            self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+            try:
+                self._client = get_async_openai_client()
+            except RuntimeError as exc:
+                raise GenerationError(str(exc)) from exc
         self._settings = settings
 
     def _build_messages(

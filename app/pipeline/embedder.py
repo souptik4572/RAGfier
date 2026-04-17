@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+import asyncio
+
 from openai import AsyncOpenAI
 from tenacity import (
     AsyncRetrying,
@@ -12,6 +14,7 @@ from tenacity import (
 )
 
 from app.config import get_settings
+from app.models.database import get_async_openai_client
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,26 +37,30 @@ class Embedder:
         if client is not None:
             self._client = client
         else:
-            if not settings.openai_api_key:
-                raise EmbeddingError("OPENAI_API_KEY is not configured.")
-            self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+            try:
+                self._client = get_async_openai_client()
+            except RuntimeError as exc:
+                raise EmbeddingError(str(exc)) from exc
         self._model = model or settings.openai_embedding_model
         self._batch_size = batch_size or settings.embedding_batch_size
 
     async def embed_texts(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
-        all_embeddings: List[List[float]] = []
-        for start in range(0, len(texts), self._batch_size):
-            batch = texts[start : start + self._batch_size]
-            logger.info(
-                "embedder.batch.start",
-                batch_index=start // self._batch_size,
-                batch_size=len(batch),
-            )
-            batch_embeddings = await self._embed_with_retry(batch)
-            all_embeddings.extend(batch_embeddings)
-        return all_embeddings
+        batches: List[List[str]] = [
+            texts[start : start + self._batch_size]
+            for start in range(0, len(texts), self._batch_size)
+        ]
+        # Run all batches concurrently — OpenAI's /embeddings endpoint can
+        # absorb the parallelism and this cuts wall-time roughly linearly in
+        # the number of batches for large ingestion jobs.
+        results = await asyncio.gather(
+            *(self._embed_with_retry(batch) for batch in batches)
+        )
+        out: List[List[float]] = []
+        for vectors in results:
+            out.extend(vectors)
+        return out
 
     async def embed_query(self, text: str) -> List[float]:
         result = await self.embed_texts([text])

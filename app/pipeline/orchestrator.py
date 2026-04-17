@@ -39,6 +39,9 @@ class IngestionOrchestrator:
         *,
         job_id: str,
         tenant_id: str,
+        knowledge_base_id: Optional[str] = None,
+        source_type: Optional[str] = None,
+        source_id: Optional[str] = None,
         file_path: str,
         file_name: str,
         file_type: str,
@@ -50,7 +53,13 @@ class IngestionOrchestrator:
 
         try:
             # --- Parse ---
-            self._upserter.update_job_status(job_id=job_id, status="parsing")
+            # Every update_job_status call makes a blocking Supabase HTTP
+            # request. Push those through to_thread so a slow status write
+            # doesn't stall the event loop (which may be servicing other
+            # ingestion jobs in parallel via BackgroundTasks).
+            await asyncio.to_thread(
+                self._upserter.update_job_status, job_id=job_id, status="parsing"
+            )
             parse_started = time.perf_counter()
             blocks = await self._parser.parse(file_path, file_type)
             logger.info(
@@ -61,7 +70,9 @@ class IngestionOrchestrator:
             )
 
             # --- Chunk ---
-            self._upserter.update_job_status(job_id=job_id, status="chunking")
+            await asyncio.to_thread(
+                self._upserter.update_job_status, job_id=job_id, status="chunking"
+            )
             chunk_started = time.perf_counter()
             chunks = await asyncio.to_thread(
                 self._chunker.chunk,
@@ -79,7 +90,8 @@ class IngestionOrchestrator:
             if not chunks:
                 raise ParserError("No chunks produced from document.")
 
-            self._upserter.update_job_status(
+            await asyncio.to_thread(
+                self._upserter.update_job_status,
                 job_id=job_id,
                 status="embedding",
                 total_chunks=len(chunks),
@@ -104,6 +116,9 @@ class IngestionOrchestrator:
                 self._upserter.upsert_chunks,
                 tenant_id=tenant_id,
                 job_id=job_id,
+                knowledge_base_id=knowledge_base_id,
+                source_type=source_type,
+                source_id=source_id,
                 chunks=chunks,
                 embeddings=embeddings,
             )
@@ -114,7 +129,8 @@ class IngestionOrchestrator:
                 **log_ctx,
             )
 
-            self._upserter.update_job_status(
+            await asyncio.to_thread(
+                self._upserter.update_job_status,
                 job_id=job_id,
                 status="completed",
                 total_chunks=len(chunks),
@@ -128,7 +144,8 @@ class IngestionOrchestrator:
         except Exception as exc:
             logger.exception("pipeline.failed", error=str(exc), **log_ctx)
             try:
-                self._upserter.update_job_status(
+                await asyncio.to_thread(
+                    self._upserter.update_job_status,
                     job_id=job_id,
                     status="failed",
                     error_message=str(exc),
@@ -152,6 +169,9 @@ async def run_pipeline_task(
     *,
     job_id: str,
     tenant_id: str,
+    knowledge_base_id: Optional[str] = None,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
     file_path: str,
     file_name: str,
     file_type: str,
@@ -163,6 +183,9 @@ async def run_pipeline_task(
         await orchestrator.run(
             job_id=job_id,
             tenant_id=tenant_id,
+            knowledge_base_id=knowledge_base_id,
+            source_type=source_type,
+            source_id=source_id,
             file_path=file_path,
             file_name=file_name,
             file_type=file_type,
