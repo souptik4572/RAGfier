@@ -9,7 +9,8 @@ if [ "${1:-}" != "--yes" ]; then
   exit 1
 fi
 
-python3 "$ROOT_DIR/scripts/purge-supabase-bucket.py" --yes
+cd "$ROOT_DIR"
+python3 -m app.cli.purge_supabase_bucket --yes
 "$ROOT_DIR/scripts/truncate-all-tables.sh" --yes
 
 echo "Environment reset completed."

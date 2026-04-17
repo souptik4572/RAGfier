@@ -8,7 +8,7 @@
   "chunk_overlap_tokens": 100,
   "embedding_batch_size": 100,
   "signed_url_expiry_seconds": 3600,
-  "generation_model": "gpt-4o",
+  "generation_model": "gpt-5.4",
   "generation_temperature": 0.1,
   "generation_max_tokens": 2048,
   "generation_timeout_seconds": 30.0,

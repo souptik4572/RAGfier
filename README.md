@@ -210,6 +210,8 @@ RAGfier/
 ├── app/
 │   ├── main.py                  FastAPI app + lifespan
 │   ├── config.py                Pydantic Settings (Phase 1 + Phase 2 + Phase 3 + Phase 4)
+│   ├── cli/                      package-native operational CLIs
+│   │   └── purge_supabase_bucket.py canonical storage-purge command
 │   ├── api/
 │   │   ├── ingest.py            POST /ingest
 │   │   ├── status.py            GET /status/{job_id}
@@ -264,7 +266,7 @@ RAGfier/
 │   ├── dump-schema.sh           regenerate sql/schema.sql from the live DB
 │   ├── reset-environment.sh     purge bucket then truncate DB
 │   ├── truncate-all-tables.sh   destructive DB reset helper
-│   └── purge-supabase-bucket.py destructive Storage reset helper
+│   └── purge-supabase-bucket.py compatibility wrapper for package CLI
 ├── tests/                       69 tests including hosted platform + SDK coverage
 ├── Dockerfile / docker-compose.yml
 ├── requirements.txt / pyproject.toml
@@ -526,16 +528,48 @@ Storage deletion must go through the Supabase Storage API, not direct SQL.
 Supabase explicitly warns that deleting storage objects via SQL can orphan
 files in the bucket.
 
+#### CLI execution standard (recommended)
+
+Operational Python commands in this repository should run as package modules
+from the repository root (for example `python -m ...`) instead of as direct
+file paths (`python scripts/...`).
+
+Why this is the standard in this repo:
+
+- Predictable import behavior: module execution resolves imports via package boundaries.
+- Better portability: commands behave the same in local shells, CI jobs, and containers.
+- Cleaner ownership: one canonical implementation in package code, optional wrappers for compatibility.
+
+Canonical implementation for bucket purge lives in:
+
+- `app/cli/purge_supabase_bucket.py`
+
+Compatibility wrapper remains available at:
+
+- `scripts/purge-supabase-bucket.py`
+
 Script:
+
+```bash
+python -m app.cli.purge_supabase_bucket --yes
+```
+
+Compatible legacy invocation:
 
 ```bash
 python scripts/purge-supabase-bucket.py --yes
 ```
 
+Installable CLI entry point (after editable install):
+
+```bash
+ragfier-purge-bucket --yes
+```
+
 Optional bucket override:
 
 ```bash
-python scripts/purge-supabase-bucket.py --yes --bucket documents
+python -m app.cli.purge_supabase_bucket --yes --bucket documents
 ```
 
 Behavior:
@@ -544,6 +578,38 @@ Behavior:
 - Requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
 - Uses `SUPABASE_STORAGE_BUCKET` by default
 - Calls the official Supabase Storage API to empty the bucket
+
+#### Command matrix
+
+| Command form | Status | Notes |
+|---|---|---|
+| `python -m app.cli.purge_supabase_bucket --yes` | Preferred | Canonical, package-native execution |
+| `python scripts/purge-supabase-bucket.py --yes` | Supported | Backward-compatible wrapper |
+| `ragfier-purge-bucket --yes` | Supported | Requires project install with entry points |
+
+#### Troubleshooting
+
+If you see:
+
+```text
+ModuleNotFoundError: No module named 'app'
+```
+
+use the module form from repo root:
+
+```bash
+python -m app.cli.purge_supabase_bucket --yes
+```
+
+If `ragfier-purge-bucket` is not found, install the project in your current
+environment:
+
+```bash
+python -m pip install -e .
+```
+
+If `python -m pip` itself fails, recreate the virtual environment so `pip`
+is present, then reinstall dependencies.
 
 ### Full environment reset
 
@@ -560,9 +626,14 @@ Behavior:
 - Truncates all application tables second
 - Stops immediately if either step fails
 
+Implementation detail:
+
+- `scripts/reset-environment.sh` now runs `python3 -m app.cli.purge_supabase_bucket --yes`
+  from repo root before truncation, so it uses the same canonical CLI path.
+
 Equivalent manual order:
 
-1. `python3 scripts/purge-supabase-bucket.py --yes`
+1. `python3 -m app.cli.purge_supabase_bucket --yes`
 2. `./scripts/truncate-all-tables.sh --yes`
 
 ## Testing
