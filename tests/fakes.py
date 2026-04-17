@@ -41,6 +41,10 @@ class FakeQuery:
         self._filters.append(("is", column, value))
         return self
 
+    def in_(self, column: str, values: Any) -> "FakeQuery":
+        self._filters.append(("in", column, list(values)))
+        return self
+
     def limit(self, n: int) -> "FakeQuery":
         self._limit = n
         return self
@@ -92,6 +96,9 @@ class FakeQuery:
                     result = [r for r in result if r.get(col) is None]
                 else:
                     result = [r for r in result if r.get(col) == val]
+            elif op == "in":
+                allowed = set(val)
+                result = [r for r in result if r.get(col) in allowed]
         return result
 
 

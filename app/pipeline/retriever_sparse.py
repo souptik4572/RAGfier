@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.models.database import get_service_client
@@ -24,23 +25,23 @@ class SparseRetriever:
     def __init__(self, client: Optional[Any] = None) -> None:
         self._client = client or get_service_client()
 
-    def retrieve(
+    async def retrieve(
         self,
         query_text: str,
         tenant_id: str,
         knowledge_base_ids: Optional[List[str]] = None,
         top_n: int = 20,
     ) -> List[Dict[str, Any]]:
+        params = {
+            "query_text": query_text,
+            "match_count": top_n,
+            "filter_tenant_id": tenant_id,
+            "filter_knowledge_base_ids": knowledge_base_ids,
+        }
         try:
-            response = self._client.rpc(
-                "match_documents_sparse",
-                {
-                    "query_text": query_text,
-                    "match_count": top_n,
-                    "filter_tenant_id": tenant_id,
-                    "filter_knowledge_base_ids": knowledge_base_ids,
-                },
-            ).execute()
+            response = await asyncio.to_thread(
+                lambda: self._client.rpc("match_documents_sparse", params).execute()
+            )
         except Exception as exc:
             logger.error("sparse_retriever.rpc_failed", tenant_id=tenant_id, error=str(exc))
             raise SparseRetrievalError(str(exc)) from exc
@@ -66,7 +67,7 @@ class HybridRetriever:
     def __init__(self, client: Optional[Any] = None) -> None:
         self._client = client or get_service_client()
 
-    def retrieve(
+    async def retrieve(
         self,
         query_embedding: List[float],
         query_text: str,
@@ -77,20 +78,20 @@ class HybridRetriever:
         dense_top_n: int = 20,
         sparse_top_n: int = 20,
     ) -> List[Dict[str, Any]]:
+        params = {
+            "query_embedding": query_embedding,
+            "query_text": query_text,
+            "match_count": match_count,
+            "rrf_k": rrf_k,
+            "dense_top_n": dense_top_n,
+            "sparse_top_n": sparse_top_n,
+            "filter_tenant_id": tenant_id,
+            "filter_knowledge_base_ids": knowledge_base_ids,
+        }
         try:
-            response = self._client.rpc(
-                "match_documents_hybrid",
-                {
-                    "query_embedding": query_embedding,
-                    "query_text": query_text,
-                    "match_count": match_count,
-                    "rrf_k": rrf_k,
-                    "dense_top_n": dense_top_n,
-                    "sparse_top_n": sparse_top_n,
-                    "filter_tenant_id": tenant_id,
-                    "filter_knowledge_base_ids": knowledge_base_ids,
-                },
-            ).execute()
+            response = await asyncio.to_thread(
+                lambda: self._client.rpc("match_documents_hybrid", params).execute()
+            )
         except Exception as exc:
             message = str(exc)
             if _is_missing_hybrid_rpc_error(message):
@@ -100,7 +101,7 @@ class HybridRetriever:
                     error=message,
                 )
                 try:
-                    dense_results = DenseRetriever(client=self._client).retrieve(
+                    dense_results = await DenseRetriever(client=self._client).retrieve(
                         query_embedding=query_embedding,
                         tenant_id=tenant_id,
                         knowledge_base_ids=knowledge_base_ids,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,31 @@ from app.utils.logger import get_logger
 from app.utils.prompt_loader import PromptNotFoundError, load_prompt
 
 logger = get_logger(__name__)
+
+_DEFAULT_EMBEDDER: Optional[Embedder] = None
+_DEFAULT_RERANKER: Optional[Reranker] = None
+
+
+def _default_embedder() -> Embedder:
+    """Module-level Embedder — avoids re-building the OpenAI client per query."""
+    global _DEFAULT_EMBEDDER
+    if _DEFAULT_EMBEDDER is None:
+        _DEFAULT_EMBEDDER = Embedder()
+    return _DEFAULT_EMBEDDER
+
+
+def _default_reranker() -> Reranker:
+    """Module-level Reranker — lets the backend (Cohere / local) stay warm."""
+    global _DEFAULT_RERANKER
+    if _DEFAULT_RERANKER is None:
+        _DEFAULT_RERANKER = Reranker()
+    return _DEFAULT_RERANKER
+
+
+def reset_pipeline_caches() -> None:
+    global _DEFAULT_EMBEDDER, _DEFAULT_RERANKER
+    _DEFAULT_EMBEDDER = None
+    _DEFAULT_RERANKER = None
 
 INSUFFICIENT_CONTEXT_MESSAGE = (
     "I don't have enough information in the available documents to answer this question."
@@ -65,27 +91,31 @@ async def prepare_query(
     started = time.perf_counter()
     latency = LatencyBreakdown()
 
-    # Load prompt first so failures don't waste retrieval work.
+    # Load prompt + embed query in parallel. Prompt lookup hits Supabase;
+    # the embed call hits OpenAI. They have no data dependency on one
+    # another, so running them sequentially wastes ~1 RTT on every query.
     name = prompt_name or settings.default_prompt_name
+    embedder = embedder or _default_embedder()
+
+    prompt_started = time.perf_counter()
+    embed_started = time.perf_counter()
+    prompt_task = asyncio.to_thread(load_prompt, name, tenant_id, client)
+    embed_task = embedder.embed_query(query)
     try:
-        prompt = load_prompt(name, tenant_id=tenant_id, client=client)
+        prompt, query_embedding = await asyncio.gather(prompt_task, embed_task)
     except PromptNotFoundError as exc:
         raise QueryPipelineError(f"Prompt '{name}' not found") from exc
-
-    # 1. Embed query.
-    t0 = time.perf_counter()
-    embedder = embedder or Embedder()
-    try:
-        query_embedding = await embedder.embed_query(query)
     except EmbeddingError as exc:
         raise QueryPipelineError(f"Embedding failed: {exc}") from exc
-    latency.embedding = _ms_since(t0)
+    latency.embedding = _ms_since(embed_started)
+    # Keep the prompt timing implicit; dominated by network RTT to Supabase.
+    _ = prompt_started
 
     # 2. Hybrid retrieve (dense + sparse + RRF inside the SQL function).
     t0 = time.perf_counter()
     retriever = hybrid_retriever or HybridRetriever(client=client)
     try:
-        fused = retriever.retrieve(
+        fused = await retriever.retrieve(
             query_embedding=query_embedding,
             query_text=query,
             tenant_id=tenant_id,
@@ -108,12 +138,16 @@ async def prepare_query(
     reranked: List[Dict[str, Any]] = fused
     if rerank and fused:
         t0 = time.perf_counter()
-        reranker = reranker or Reranker()
+        reranker = reranker or _default_reranker()
         try:
-            reranked, reranker_provider = reranker.rerank(
-                query=query,
-                chunks=fused[: settings.dense_top_n],
-                top_k=match_count,
+            # Cohere's SDK is sync httpx; local CrossEncoder is CPU-bound.
+            # In either case, offload to a worker thread to avoid stalling
+            # other concurrent queries.
+            reranked, reranker_provider = await asyncio.to_thread(
+                reranker.rerank,
+                query,
+                fused[: settings.dense_top_n],
+                match_count,
             )
         except RerankerError as exc:
             logger.warning("query_pipeline.rerank_failed", error=str(exc))

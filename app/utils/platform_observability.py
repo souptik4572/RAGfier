@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+async def write_audit_log_async(client: Any, **kwargs: Any) -> None:
+    """Async wrapper — offloads the blocking Supabase insert to a worker
+    thread so the request handler's event loop stays responsive to other
+    in-flight requests while the audit row is written."""
+    await asyncio.to_thread(write_audit_log, client, **kwargs)
+
+
+async def write_request_log_async(client: Any, **kwargs: Any) -> None:
+    """Async wrapper for :func:`write_request_log` — see rationale above."""
+    await asyncio.to_thread(write_request_log, client, **kwargs)
 
 
 def write_audit_log(

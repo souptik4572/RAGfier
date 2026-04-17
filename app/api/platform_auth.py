@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -12,6 +13,21 @@ from app.utils.logger import get_logger
 from app.utils.platform_security import derive_api_key_prefix, hash_api_key
 
 logger = get_logger(__name__)
+
+# Keep strong references to fire-and-forget tasks so the event loop does
+# not GC them mid-flight (see asyncio.create_task docs).
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _fire_and_forget(coro: Any) -> None:
+    """Schedule ``coro`` without awaiting it; track it so it isn't GC'd."""
+    try:
+        task = asyncio.create_task(coro)
+    except RuntimeError:
+        # No running loop — caller is likely in a sync context; skip.
+        return
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 @dataclass
@@ -39,8 +55,10 @@ def require_platform_context(*required_scopes: str) -> Callable[..., PlatformAut
 
         client = get_service_client()
         try:
-            rows = (
-                client.table("api_keys")
+            # supabase-py is sync httpx — offload to a worker thread so
+            # concurrent auth checks don't serialize on the event loop.
+            rows = await asyncio.to_thread(
+                lambda: client.table("api_keys")
                 .select("*")
                 .eq("prefix", prefix)
                 .limit(1)
@@ -72,10 +90,11 @@ def require_platform_context(*required_scopes: str) -> Callable[..., PlatformAut
                 detail={"missing_scopes": missing},
             )
 
-        try:
-            client.table("api_keys").update({"last_used_at": "now()"}).eq("id", row["id"]).execute()
-        except Exception as exc:  # pragma: no cover - non-fatal
-            logger.warning("platform_auth.last_used_update_failed", api_key_id=row.get("id"), error=str(exc))
+        # `last_used_at` is purely informational telemetry — don't block
+        # the request on it. Fire-and-forget via create_task so the caller
+        # sees a faster response and auth requests don't queue behind this
+        # write when Supabase is slow.
+        _fire_and_forget(_update_last_used(client, row["id"]))
 
         return PlatformAuthContext(
             tenant_id=str(row["tenant_id"]),
@@ -86,6 +105,22 @@ def require_platform_context(*required_scopes: str) -> Callable[..., PlatformAut
         )
 
     return _dependency
+
+
+async def _update_last_used(client: Any, api_key_id: Any) -> None:
+    try:
+        await asyncio.to_thread(
+            lambda: client.table("api_keys")
+            .update({"last_used_at": "now()"})
+            .eq("id", api_key_id)
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover - non-fatal telemetry
+        logger.warning(
+            "platform_auth.last_used_update_failed",
+            api_key_id=api_key_id,
+            error=str(exc),
+        )
 
 
 def _is_expired(value: str) -> bool:

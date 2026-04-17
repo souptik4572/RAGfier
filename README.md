@@ -582,6 +582,37 @@ round-trip.
 - GitHub Actions workflow in [.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml).
 - Unit and integration coverage for the Phase 3 pieces in [tests/test_eval_runner.py](tests/test_eval_runner.py), [tests/test_eval_api.py](tests/test_eval_api.py), [tests/test_custom_metrics.py](tests/test_custom_metrics.py), and [tests/test_rag_evaluation.py](tests/test_rag_evaluation.py).
 
+### Metrics and thresholds
+
+Thresholds live in [eval/config/thresholds.yaml](eval/config/thresholds.yaml) and are overridable per-env; `blocking: true` metrics fail the CI gate, `blocking: false` metrics only warn.
+
+| Metric | What it measures | Source | Threshold | Blocking |
+|--------|------------------|--------|-----------|----------|
+| Faithfulness | Share of answer claims entailed by retrieved context | Ragas | ≥ 0.85 | Yes |
+| Answer Relevancy | How on-topic the answer is vs. the user's question | Ragas | ≥ 0.80 | Yes |
+| Context Precision | Whether relevant chunks are ranked above irrelevant ones | Ragas | ≥ 0.75 | Yes |
+| Context Recall | Whether retrieval surfaced all info needed for the reference | Ragas | ≥ 0.75 | No (warn) |
+| Citation Coverage | % of factual sentences carrying `[SOURCE_N]` anchors | Custom — [eval/metrics/citation_coverage.py](eval/metrics/citation_coverage.py) | ≥ 0.90 | Yes |
+| Decline Accuracy | Correct decline on unanswerable / correct answer on answerable | Custom — [eval/metrics/decline_accuracy.py](eval/metrics/decline_accuracy.py) | ≥ 0.80 | Yes |
+| Latency Compliance | % of queries completing within the configured budget | Custom — [eval/metrics/latency_compliance.py](eval/metrics/latency_compliance.py) | ≥ 0.90 | No (warn) |
+
+Aggregation additionally enforces `min_passing_rate` (default 0.80) — at least that fraction of samples must pass every blocking metric for the run to pass. Defaults for the judge model and latency budget come from `EVAL_LLM_JUDGE` and `EVAL_LATENCY_BUDGET_MS`.
+
+### Golden dataset shape
+
+Golden datasets are versioned JSON under [eval/datasets/](eval/datasets/) with a [CHANGELOG.md](eval/datasets/CHANGELOG.md). Samples are typed as `GoldenSample` in [eval/dataset.py](eval/dataset.py) and expected to span six categories — `exact_match`, `conceptual`, `multi_context`, `unanswerable`, `reasoning`, `adversarial`. The spec targets ≥ 50 manually-reviewed samples; the checked-in `golden_v1.0.0.json` ships 14 seed samples and is expected to be extended via manual curation plus Ragas-generated drafts from [eval/generate.py](eval/generate.py) (synthetic samples must be human-reviewed before inclusion).
+
+Never compare scores across dataset versions; every evaluation run records `dataset_version` alongside its aggregate scores.
+
+### Storage schema
+
+Added by [sql/migrations/202604160003_phase3_eval_pipeline.sql](sql/migrations/202604160003_phase3_eval_pipeline.sql):
+
+- `eval_runs` — one row per evaluation run with `dataset_version`, `trigger`, `git_sha`, `git_branch`, aggregate averages for every metric, the thresholds used, `passed` + `failure_reasons`, `total_samples`, `failed_samples`, `eval_model`, `total_eval_cost_usd`, and `duration_seconds`.
+- `eval_sample_results` — one row per sample per run with `user_input`, `response`, `retrieved_contexts`, `reference`, per-metric scores, latency, chunks retrieved, top rerank score, model used, and prompt version.
+- Indexes on `(tenant_id, created_at DESC)` and `git_sha` on `eval_runs`, and on `eval_run_id` on `eval_sample_results`.
+- RLS enforces `tenant_id = auth.jwt() -> 'app_metadata' ->> 'organization_id'` on both tables.
+
 ### Local commands
 
 ```bash
@@ -762,6 +793,23 @@ hallucination defense on top of the relevance-threshold short-circuit.
 | 8 | Prompt management (`/prompts` + YAML fallback) | Done |
 | 9 | Per-step latency tracking in response metadata | Done |
 | 10 | Phase 2 test suite (fusion, reranker, generator, citation resolver, E2E) | Done |
+
+## Phase 3 Deliverables — Status
+
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | Golden dataset (v1.0.0) with versioned JSON + CHANGELOG | Done ([eval/datasets/golden_v1.0.0.json](eval/datasets/golden_v1.0.0.json), [eval/datasets/CHANGELOG.md](eval/datasets/CHANGELOG.md)) — seed of 14 samples; expanding toward the ≥50-sample target |
+| 2 | Synthetic test generation pipeline | Done ([eval/generate.py](eval/generate.py)) — Ragas `TestsetGenerator` CLI writes a review-required draft; human review still mandatory before samples enter the golden set |
+| 3 | Ragas evaluation pipeline (Faithfulness, Answer Relevancy, Context Precision, Context Recall) | Done ([eval/ragas_runner.py](eval/ragas_runner.py)) |
+| 4 | Custom metrics (Citation Coverage, Decline Accuracy, Latency Compliance) | Done ([eval/metrics/](eval/metrics/)) |
+| 5 | DeepEval pytest suite with pass/fail thresholds | Done ([tests/test_rag_evaluation.py](tests/test_rag_evaluation.py)) |
+| 6 | GitHub Actions CI quality gate | Done ([.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml)) — triggers on PRs touching pipeline/prompt/SQL/eval paths, plus weekly cron |
+| 7 | Evaluation storage schema (`eval_runs`, `eval_sample_results`) with RLS | Done ([sql/migrations/202604160003_phase3_eval_pipeline.sql](sql/migrations/202604160003_phase3_eval_pipeline.sql)) |
+| 8 | `/eval/run`, `/eval/runs`, `/eval/runs/{id}/samples` APIs | Done ([app/api/eval.py](app/api/eval.py)) |
+| 9 | CLI tools: `eval.run`, `eval.generate`, `eval.history`, `eval.compare` | Done ([eval/run.py](eval/run.py), [eval/generate.py](eval/generate.py), [eval/history.py](eval/history.py), [eval/compare.py](eval/compare.py)) |
+| 10 | Historical score tracking + run comparison | Done — `eval.history` and `eval.compare` CLIs over the persisted `eval_runs` / `eval_sample_results` tables |
+| 11 | Threshold configuration decoupled from code | Done ([eval/config/thresholds.yaml](eval/config/thresholds.yaml), [eval/thresholds.py](eval/thresholds.py)) |
+| 12 | Phase 3 test coverage | Done ([tests/test_eval_runner.py](tests/test_eval_runner.py), [tests/test_eval_api.py](tests/test_eval_api.py), [tests/test_custom_metrics.py](tests/test_custom_metrics.py), [tests/test_rag_evaluation.py](tests/test_rag_evaluation.py)) |
 
 ## Phase 4 Deliverables — Status
 

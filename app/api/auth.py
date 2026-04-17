@@ -21,6 +21,25 @@ from app.utils.messages import get_message
 logger = get_logger(__name__)
 router = APIRouter(tags=["auth"])
 
+# Module-level httpx client so signup/login calls reuse a single TCP/TLS
+# pool instead of paying the handshake tax on every Supabase request.
+_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(timeout=15.0)
+    return _HTTP_CLIENT
+
+
+async def reset_http_client() -> None:
+    """Close the shared client — primarily for test teardown."""
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is not None and not _HTTP_CLIENT.is_closed:
+        await _HTTP_CLIENT.aclose()
+    _HTTP_CLIENT = None
+
 
 class SupabaseAuthError(Exception):
     def __init__(self, status_code: int, detail: str) -> None:
@@ -132,8 +151,8 @@ async def _request_supabase(
     if extra_headers:
         headers.update(extra_headers)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.request(method, url, headers=headers, json=json_body)
+    client = _get_http_client()
+    response = await client.request(method, url, headers=headers, json=json_body)
 
     try:
         body = response.json()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.models.database import get_service_client
@@ -18,23 +19,25 @@ class DenseRetriever:
     def __init__(self, client: Optional[Any] = None) -> None:
         self._client = client or get_service_client()
 
-    def retrieve(
+    async def retrieve(
         self,
         query_embedding: List[float],
         tenant_id: str,
         knowledge_base_ids: Optional[List[str]] = None,
         top_n: int = 20,
     ) -> List[Dict[str, Any]]:
+        params = {
+            "query_embedding": query_embedding,
+            "match_count": top_n,
+            "filter_tenant_id": tenant_id,
+            "filter_knowledge_base_ids": knowledge_base_ids,
+        }
         try:
-            response = self._client.rpc(
-                "match_documents",
-                {
-                    "query_embedding": query_embedding,
-                    "match_count": top_n,
-                    "filter_tenant_id": tenant_id,
-                    "filter_knowledge_base_ids": knowledge_base_ids,
-                },
-            ).execute()
+            # supabase-py is sync under the hood — offload to a worker thread
+            # so the event loop keeps serving other requests during the RPC.
+            response = await asyncio.to_thread(
+                lambda: self._client.rpc("match_documents", params).execute()
+            )
         except Exception as exc:
             logger.error("dense_retriever.rpc_failed", tenant_id=tenant_id, error=str(exc))
             raise DenseRetrievalError(str(exc)) from exc

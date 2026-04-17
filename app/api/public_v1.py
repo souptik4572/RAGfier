@@ -48,7 +48,11 @@ from app.pipeline.query_pipeline import (
 )
 from app.utils.api_errors import build_response, raise_api_error, success_payload
 from app.utils.logger import get_logger
-from app.utils.platform_observability import write_audit_log, write_request_log
+from app.utils.platform_observability import (
+    write_audit_log,
+    write_audit_log_async,
+    write_request_log_async,
+)
 from app.utils.platform_security import encrypt_connector_config
 from app.utils.token_counter import count_tokens
 
@@ -77,7 +81,7 @@ async def create_knowledge_base(
         },
         "platform.knowledge_base_created",
     )
-    write_audit_log(
+    await write_audit_log_async(
         client,
         tenant_id=auth.tenant_id,
         actor_type="api_key",
@@ -170,7 +174,7 @@ async def upload_document_v1(
         document_title=document_title,
     )
 
-    write_audit_log(
+    await write_audit_log_async(
         client,
         tenant_id=auth.tenant_id,
         actor_type="api_key",
@@ -180,7 +184,7 @@ async def upload_document_v1(
         resource_id=job_id,
         metadata={"knowledge_base_id": str(knowledge_base_id), "file_name": file.filename},
     )
-    write_request_log(
+    await write_request_log_async(
         client,
         tenant_id=auth.tenant_id,
         integration_id=auth.integration_id,
@@ -240,7 +244,7 @@ async def delete_document(
 
     deleted = _delete_rows(client, "documents", "job_id", str(document_id))
     client.table("ingestion_jobs").update({"status": "deleted"}).eq("id", str(document_id)).execute()
-    write_audit_log(
+    await write_audit_log_async(
         client,
         tenant_id=auth.tenant_id,
         actor_type="api_key",
@@ -267,6 +271,9 @@ async def query_v1(
     client = get_service_client()
     _require_kbs(client, auth.tenant_id, payload.knowledge_base_ids)
     request_id = uuid.uuid4()
+    # Compute once — tiktoken encoding is not free, and this value was
+    # previously recomputed on every success/declined/error branch below.
+    query_token_count = count_tokens(payload.query)
 
     try:
         prepared = await prepare_query(
@@ -280,7 +287,7 @@ async def query_v1(
         )
     except QueryPipelineError as exc:
         logger.error("platform.query.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
-        write_request_log(
+        await write_request_log_async(
             client,
             tenant_id=auth.tenant_id,
             integration_id=auth.integration_id,
@@ -289,7 +296,7 @@ async def query_v1(
             method="POST",
             status_code=500,
             latency_ms=_elapsed_ms(started),
-            input_tokens=count_tokens(payload.query),
+            input_tokens=query_token_count,
             error_code="pipeline_failed",
             metadata={"knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
         )
@@ -297,9 +304,9 @@ async def query_v1(
 
     if prepared.declined:
         stamp_total_latency(prepared)
-        usage = UsageMetadata(input_tokens=count_tokens(payload.query))
+        usage = UsageMetadata(input_tokens=query_token_count)
         usage.total_tokens = usage.input_tokens
-        write_request_log(
+        await write_request_log_async(
             client,
             tenant_id=auth.tenant_id,
             integration_id=auth.integration_id,
@@ -312,7 +319,7 @@ async def query_v1(
             output_tokens=0,
             metadata={"declined": True},
         )
-        write_audit_log(
+        await write_audit_log_async(
             client,
             tenant_id=auth.tenant_id,
             actor_type="api_key",
@@ -343,7 +350,7 @@ async def query_v1(
             query=payload.query,
         )
     except GenerationError as exc:
-        write_request_log(
+        await write_request_log_async(
             client,
             tenant_id=auth.tenant_id,
             integration_id=auth.integration_id,
@@ -352,7 +359,7 @@ async def query_v1(
             method="POST",
             status_code=500,
             latency_ms=_elapsed_ms(started),
-            input_tokens=count_tokens(payload.query),
+            input_tokens=query_token_count,
             error_code="generation_failed",
         )
         raise_api_error(500, "query.generation_failed", detail=str(exc))
@@ -360,8 +367,8 @@ async def query_v1(
     prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
     stamp_total_latency(prepared)
     citations = resolve_citations(answer, prepared.final_chunks) if payload.include_sources else []
-    usage = _usage_from_texts(payload.query, answer)
-    write_request_log(
+    usage = _usage_from_texts_cached(query_token_count, answer)
+    await write_request_log_async(
         client,
         tenant_id=auth.tenant_id,
         integration_id=auth.integration_id,
@@ -379,7 +386,7 @@ async def query_v1(
             "tags": payload.tags,
         },
     )
-    write_audit_log(
+    await write_audit_log_async(
         client,
         tenant_id=auth.tenant_id,
         actor_type="api_key",
@@ -411,6 +418,7 @@ async def query_stream_v1(
     _require_kbs(client, auth.tenant_id, payload.knowledge_base_ids)
     request_id = str(uuid.uuid4())
     started = time.perf_counter()
+    query_token_count = count_tokens(payload.query)
 
     try:
         prepared = await prepare_query(
@@ -444,7 +452,7 @@ async def query_stream_v1(
 
         if prepared.declined:
             stamp_total_latency(prepared)
-            write_request_log(
+            await write_request_log_async(
                 client,
                 tenant_id=auth.tenant_id,
                 integration_id=auth.integration_id,
@@ -453,7 +461,7 @@ async def query_stream_v1(
                 method="POST",
                 status_code=200,
                 latency_ms=prepared.retrieval_metadata.latency_ms.total,
-                input_tokens=count_tokens(payload.query),
+                input_tokens=query_token_count,
                 metadata={"declined": True},
             )
             yield {"event": "token", "data": INSUFFICIENT_CONTEXT_MESSAGE}
@@ -465,7 +473,7 @@ async def query_stream_v1(
                         request_id=request_id,
                         declined=True,
                         retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
-                        usage=_usage_from_texts(payload.query, "").model_dump(mode="json"),
+                        usage=_usage_from_texts_cached(query_token_count, "").model_dump(mode="json"),
                     )
                 ),
             }
@@ -492,8 +500,8 @@ async def query_stream_v1(
         prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
         stamp_total_latency(prepared)
         answer = "".join(answer_parts)
-        usage = _usage_from_texts(payload.query, answer)
-        write_request_log(
+        usage = _usage_from_texts_cached(query_token_count, answer)
+        await write_request_log_async(
             client,
             tenant_id=auth.tenant_id,
             integration_id=auth.integration_id,
@@ -561,7 +569,7 @@ async def trigger_connector_sync(
         },
         "platform.connector_sync_started",
     )
-    write_audit_log(
+    await write_audit_log_async(
         client,
         tenant_id=auth.tenant_id,
         actor_type="api_key",
@@ -608,7 +616,12 @@ async def list_usage(
     auth: PlatformAuthContext = Depends(require_platform_context("analytics:read")),
 ) -> UsageResponse:
     client = get_service_client()
-    rows = _select_rows(client, "request_logs", tenant_id=auth.tenant_id)
+    # Cap at ~100 rows/day × requested window. Previously pulled the entire
+    # request_logs table for the tenant (unbounded) and re-sliced in Python
+    # — that is O(total tenant history) per call and will OOM large tenants.
+    rows = _select_rows_limited(
+        client, "request_logs", tenant_id=auth.tenant_id, limit=days * 100
+    )
     buckets: dict[str, dict[str, Any]] = defaultdict(lambda: {
         "window_start": None,
         "request_count": 0,
@@ -618,7 +631,7 @@ async def list_usage(
         "total_output_tokens": 0,
         "latency_total": 0,
     })
-    for row in rows[-days * 100 :]:
+    for row in rows:
         key = str(row.get("created_at") or "")[:10]
         bucket = buckets[key]
         bucket["window_start"] = _coerce_datetime(row.get("created_at"))
@@ -653,10 +666,13 @@ async def list_usage(
 
 @router.get("/audit-logs", response_model=AuditLogListResponse)
 async def list_audit_logs(
+    limit: int = Query(default=200, ge=1, le=1000),
     auth: PlatformAuthContext = Depends(require_platform_context("analytics:read")),
 ) -> AuditLogListResponse:
     client = get_service_client()
-    rows = _select_rows(client, "audit_logs", tenant_id=auth.tenant_id)
+    rows = _select_rows_limited(
+        client, "audit_logs", tenant_id=auth.tenant_id, limit=limit
+    )
     logs = [
         AuditLogEntry(
             id=UUID(str(row["id"])),
@@ -736,6 +752,24 @@ def _select_rows(client: Any, table: str, *, tenant_id: str) -> list[dict[str, A
         raise_api_error(500, "common.internal_error")
 
 
+def _select_rows_limited(
+    client: Any, table: str, *, tenant_id: str, limit: int
+) -> list[dict[str, Any]]:
+    try:
+        return (
+            client.table(table)
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.error("platform.select_failed", table=table, tenant_id=tenant_id, error=str(exc))
+        raise_api_error(500, "common.internal_error")
+
+
 def _get_row(client: Any, table: str, column: str, value: str, *, tenant_id: str) -> Optional[dict[str, Any]]:
     rows = (
         client.table(table)
@@ -773,11 +807,28 @@ def _require_kb(client: Any, tenant_id: str, knowledge_base_id: str) -> dict[str
 
 
 def _require_kbs(client: Any, tenant_id: str, knowledge_base_ids: Iterable[UUID]) -> None:
-    rows = _select_rows(client, "knowledge_bases", tenant_id=tenant_id)
+    ids = [str(kb_id) for kb_id in knowledge_base_ids]
+    if not ids:
+        return
+    # Previously fetched ALL knowledge_bases for the tenant and scanned in
+    # Python — unbounded and slow for large tenants. Filter server-side via
+    # `.in_()` so we only pull the rows we need to validate.
+    try:
+        rows = (
+            client.table("knowledge_bases")
+            .select("id")
+            .eq("tenant_id", tenant_id)
+            .in_("id", ids)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.error("platform.require_kbs_failed", tenant_id=tenant_id, error=str(exc))
+        raise_api_error(500, "common.internal_error")
     found = {str(row["id"]) for row in rows}
-    for knowledge_base_id in knowledge_base_ids:
-        if str(knowledge_base_id) not in found:
-            raise_api_error(404, "platform.knowledge_base_not_found")
+    if not all(kb_id in found for kb_id in ids):
+        raise_api_error(404, "platform.knowledge_base_not_found")
 
 
 def _kb_summary(row: dict[str, Any], message_key: str = "") -> KnowledgeBaseSummary:
@@ -830,8 +881,15 @@ def _connector_summary(row: dict[str, Any], message_key: str = "") -> ConnectorS
 
 
 def _usage_from_texts(query: str, answer: str) -> UsageMetadata:
+    return _usage_from_texts_cached(count_tokens(query), answer)
+
+
+def _usage_from_texts_cached(query_tokens: int, answer: str) -> UsageMetadata:
+    """Variant that reuses a precomputed input-token count — callers on the
+    query hot path previously recomputed ``count_tokens(query)`` up to four
+    times per request (pipeline error, decline, generation error, success)."""
     usage = UsageMetadata(
-        input_tokens=count_tokens(query),
+        input_tokens=query_tokens,
         output_tokens=count_tokens(answer) if answer else 0,
     )
     usage.total_tokens = usage.input_tokens + usage.output_tokens
