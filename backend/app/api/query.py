@@ -16,6 +16,7 @@ from app.pipeline.query_pipeline import (
     stamp_total_latency,
 )
 from app.utils.api_errors import build_response, raise_api_error
+from app.utils.integration_resolver import resolve_integration
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,10 +30,14 @@ async def query_documents(
     auth: AuthContext = Depends(get_auth_context),
 ) -> HybridQueryResponse:
     client = get_service_client()
+    integration_id_str = str(payload.integration_id) if getattr(payload, "integration_id", None) else None
+    integration = resolve_integration(client, auth.tenant_id, integration_id_str)
+    resolved_integration_id = str(integration["id"])
     try:
         prepared = await prepare_query(
             query=payload.query,
             tenant_id=auth.tenant_id,
+            integration_id=resolved_integration_id,
             match_count=payload.match_count,
             rerank=payload.rerank,
             prompt_name=payload.prompt_name,

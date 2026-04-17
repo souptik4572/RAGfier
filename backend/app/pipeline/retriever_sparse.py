@@ -30,6 +30,7 @@ class SparseRetriever:
         query_text: str,
         tenant_id: str,
         knowledge_base_ids: Optional[List[str]] = None,
+        integration_id: Optional[str] = None,
         top_n: int = 20,
     ) -> List[Dict[str, Any]]:
         params = {
@@ -37,6 +38,7 @@ class SparseRetriever:
             "match_count": top_n,
             "filter_tenant_id": tenant_id,
             "filter_knowledge_base_ids": knowledge_base_ids,
+            "filter_integration_id": integration_id,
         }
         try:
             response = await asyncio.to_thread(
@@ -73,6 +75,7 @@ class HybridRetriever:
         query_text: str,
         tenant_id: str,
         knowledge_base_ids: Optional[List[str]] = None,
+        integration_id: Optional[str] = None,
         match_count: int = 20,
         rrf_k: int = 60,
         dense_top_n: int = 20,
@@ -87,6 +90,7 @@ class HybridRetriever:
             "sparse_top_n": sparse_top_n,
             "filter_tenant_id": tenant_id,
             "filter_knowledge_base_ids": knowledge_base_ids,
+            "filter_integration_id": integration_id,
         }
         try:
             response = await asyncio.to_thread(
@@ -105,6 +109,7 @@ class HybridRetriever:
                         query_embedding=query_embedding,
                         tenant_id=tenant_id,
                         knowledge_base_ids=knowledge_base_ids,
+                        integration_id=integration_id,
                         top_n=match_count,
                     )
                 except DenseRetrievalError as dense_exc:

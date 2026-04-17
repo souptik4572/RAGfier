@@ -4,13 +4,13 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'app/pipeline/**'
-      - 'app/api/query*.py'
-      - 'prompts/**'
-      - 'sql/**'
-      - 'eval/**'
-      - 'tests/test_rag_evaluation.py'
-      - 'requirements.txt'
+      - 'backend/app/pipeline/**'
+      - 'backend/app/api/query*.py'
+      - 'backend/prompts/**'
+      - 'backend/sql/**'
+      - 'backend/eval/**'
+      - 'backend/tests/test_rag_evaluation.py'
+      - 'backend/requirements.txt'
 
   workflow_dispatch:
     inputs:
@@ -26,6 +26,9 @@ jobs:
   evaluate:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
 
     steps:
       - name: Checkout code
@@ -40,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -72,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eval-report-${{ github.sha }}
-          path: eval/reports/
+          path: backend/eval/reports/
           if-no-files-found: ignore
 
       - name: Persist evaluation results

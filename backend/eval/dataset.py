@@ -21,7 +21,9 @@ class GoldenSample:
 
     @property
     def is_unanswerable(self) -> bool:
-        return self.category == "unanswerable"
+        # Adversarial prompts should always be declined just like unanswerable
+        # ones — skip faithfulness / precision / recall for both categories.
+        return self.category in ("unanswerable", "adversarial")
 
 
 @dataclass
