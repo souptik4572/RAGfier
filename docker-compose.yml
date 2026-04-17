@@ -1,32 +1,59 @@
+# Multi-service compose file.
+# Backend: FastAPI application + DB migrations (dbmate).
+# Frontend: placeholder — uncomment and fill in once implemented.
+#
+# Usage:
+#   docker compose up              # start everything
+#   docker compose up backend      # start backend only
+#   docker compose up frontend     # start frontend only (once implemented)
+
 services:
+  # ── Database migrations ──────────────────────────────────────────────────────
   migrate:
     image: ghcr.io/amacneil/dbmate:latest
     container_name: ragfier-migrate
     env_file:
-      - .env
+      - backend/.env
     environment:
       DBMATE_MIGRATIONS_DIR: /db/sql/migrations
       DBMATE_NO_DUMP_SCHEMA: "true"
     volumes:
-      - .:/db
+      - ./backend:/db
     entrypoint: ["/bin/sh", "/db/scripts/run-dbmate-container.sh"]
     restart: "no"
 
-  api:
-    build: .
-    container_name: ragfier-api
+  # ── Backend (FastAPI) ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ragfier-backend
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - backend/.env
     volumes:
-      - ./app:/app/app
-      - ./eval:/app/eval
-      - ./config:/app/config
-      - ./prompts:/app/prompts
-      - ./sql:/app/sql
+      - ./backend/app:/app/app
+      - ./backend/eval:/app/eval
+      - ./backend/config:/app/config
+      - ./backend/prompts:/app/prompts
+      - ./backend/sql:/app/sql
     depends_on:
       migrate:
         condition: service_completed_successfully
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
+
+  # ── Frontend (placeholder — implement when ready) ─────────────────────────────
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: ragfier-frontend
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - NEXT_PUBLIC_API_URL=http://backend:8000
+  #   depends_on:
+  #     - backend
+  #   restart: unless-stopped

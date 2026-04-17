@@ -15,19 +15,34 @@ connector records, audit/request logging, and a server SDK.
 See [SPEC.md](SPEC.md) (Phase 3) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
 full technical specs, and [AGENTS.md](AGENTS.md) for coding conventions.
 
+## Repository Layout
+
+The repository is split into two top-level workspaces:
+
+```
+RAGfier/
+├── backend/    FastAPI application, evaluation pipeline, SQL, scripts, SDK, tests
+├── frontend/   Frontend application (placeholder — not yet implemented)
+└── docker-compose.yml  Single multi-service compose file for the whole stack
+```
+
+All backend work lives under `backend/`. The frontend workspace is an empty
+placeholder ready to receive a UI implementation that talks to the backend
+through the existing REST/SSE APIs.
+
 ## Configuration Model
 
 RAGfier uses a hybrid configuration model:
 
-- **Sensitive values** (API keys, tokens, service-role credentials) live in environment variables / `.env`.
-- **Non-sensitive runtime defaults** live in [config/config.defaults.json](config/config.defaults.json) and are committed to source control.
+- **Sensitive values** (API keys, tokens, service-role credentials) live in environment variables / `backend/.env`.
+- **Non-sensitive runtime defaults** live in [backend/config/config.defaults.json](backend/config/config.defaults.json) and are committed to source control.
 
 Settings precedence (highest to lowest):
 
 1. Explicit initialization values
 2. Environment variables
-3. `.env`
-4. JSON defaults file (`config/config.defaults.json`)
+3. `backend/.env`
+4. JSON defaults file (`backend/config/config.defaults.json`)
 
 This keeps deploy-time secrets out of source control while making safe defaults auditable and versioned.
 
@@ -39,11 +54,11 @@ This keeps deploy-time secrets out of source control while making safe defaults 
 Upload → Supabase Storage → LlamaParse → Chunker → OpenAI Embeddings → pgvector
 ```
 
-- **Parser** — [app/pipeline/parser.py](app/pipeline/parser.py): LlamaParse for PDFs, in-process Markdown parser. Tracks section headings and spatial metadata.
-- **Chunker** — [app/pipeline/chunker.py](app/pipeline/chunker.py): `RecursiveCharacterTextSplitter`, 700-token target / 100 overlap, tiktoken `cl100k_base`. Prepends document title + section heading to every chunk.
-- **Embedder** — [app/pipeline/embedder.py](app/pipeline/embedder.py): OpenAI `text-embedding-3-small` (1536d), batch size 100, exponential backoff (max 3 retries).
-- **Upserter** — [app/pipeline/upserter.py](app/pipeline/upserter.py): Batch insert into `documents` with full metadata JSONB; updates `ingestion_jobs.status` at every step.
-- **Orchestrator** — [app/pipeline/orchestrator.py](app/pipeline/orchestrator.py): Coordinates the full parse → chunk → embed → upsert flow under a single `job_id`.
+- **Parser** — [backend/app/pipeline/parser.py](backend/app/pipeline/parser.py): LlamaParse for PDFs, in-process Markdown parser. Tracks section headings and spatial metadata.
+- **Chunker** — [backend/app/pipeline/chunker.py](backend/app/pipeline/chunker.py): `RecursiveCharacterTextSplitter`, 700-token target / 100 overlap, tiktoken `cl100k_base`. Prepends document title + section heading to every chunk.
+- **Embedder** — [backend/app/pipeline/embedder.py](backend/app/pipeline/embedder.py): OpenAI `text-embedding-3-small` (1536d), batch size 100, exponential backoff (max 3 retries).
+- **Upserter** — [backend/app/pipeline/upserter.py](backend/app/pipeline/upserter.py): Batch insert into `documents` with full metadata JSONB; updates `ingestion_jobs.status` at every step.
+- **Orchestrator** — [backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py): Coordinates the full parse → chunk → embed → upsert flow under a single `job_id`.
 
 ### Query pipeline (Phase 2)
 
@@ -51,15 +66,15 @@ Upload → Supabase Storage → LlamaParse → Chunker → OpenAI Embeddings →
 Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ RRF) → Rerank → Guardrail → Prompt → LLM → Citations
 ```
 
-- **Dense retrieval** — [app/pipeline/retriever_dense.py](app/pipeline/retriever_dense.py): cosine similarity via `match_documents` (HNSW + `vector_cosine_ops`).
-- **Sparse retrieval** — [app/pipeline/retriever_sparse.py](app/pipeline/retriever_sparse.py): BM25-equivalent via Postgres `tsvector` + `websearch_to_tsquery` on a generated `fts` column. The `HybridRetriever` runs both branches + RRF inside the `match_documents_hybrid` SQL function.
-- **Reciprocal Rank Fusion** — [app/pipeline/fusion.py](app/pipeline/fusion.py): pure-Python RRF (`1 / (k + rank)`, `k=60`) used by the in-process fallback path and tests.
-- **Reranker** — [app/pipeline/reranker.py](app/pipeline/reranker.py): Cohere `rerank-english-v3.0` primary + local `cross-encoder/ms-marco-MiniLM-L-6-v2` fallback behind a single `Reranker` facade. Auto-falls-back on API failure and reports the provider actually used.
-- **Hallucination guardrail** — [app/pipeline/reranker.py:check_relevance](app/pipeline/reranker.py): declines with the canonical "not enough information" message when the top rerank score is below `RELEVANCE_THRESHOLD`, or when retrieval is empty.
-- **Generator** — [app/pipeline/generator.py](app/pipeline/generator.py): OpenAI `gpt-4o` (configurable) with retry-wrapped `generate()` and async `stream()`; model/temperature/max_tokens are pulled from the prompt config.
-- **Citation resolver** — [app/pipeline/citation_resolver.py](app/pipeline/citation_resolver.py): `assemble_context()` injects `[SOURCE_N]` headers with document / section / page; `resolve_citations()` parses the generated text and returns `Citation` objects with full metadata and rerank/RRF scores.
-- **Prompt loader** — [app/utils/prompt_loader.py](app/utils/prompt_loader.py): tenant-DB override > global-DB prompt > YAML file ([prompts/rag_generation_v1.yaml](prompts/rag_generation_v1.yaml)).
-- **Query orchestrator** — [app/pipeline/query_pipeline.py](app/pipeline/query_pipeline.py): shared `prepare_query()` that runs embed → hybrid retrieve → rerank → guardrail → context assembly, returning a `PreparedQuery` reused by both the sync and streaming endpoints. Tracks per-step latency in `RetrievalMetadata.latency_ms`.
+- **Dense retrieval** — [backend/app/pipeline/retriever_dense.py](backend/app/pipeline/retriever_dense.py): cosine similarity via `match_documents` (HNSW + `vector_cosine_ops`).
+- **Sparse retrieval** — [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py): BM25-equivalent via Postgres `tsvector` + `websearch_to_tsquery` on a generated `fts` column. The `HybridRetriever` runs both branches + RRF inside the `match_documents_hybrid` SQL function.
+- **Reciprocal Rank Fusion** — [backend/app/pipeline/fusion.py](backend/app/pipeline/fusion.py): pure-Python RRF (`1 / (k + rank)`, `k=60`) used by the in-process fallback path and tests.
+- **Reranker** — [backend/app/pipeline/reranker.py](backend/app/pipeline/reranker.py): Cohere `rerank-english-v3.0` primary + local `cross-encoder/ms-marco-MiniLM-L-6-v2` fallback behind a single `Reranker` facade. Auto-falls-back on API failure and reports the provider actually used.
+- **Hallucination guardrail** — [backend/app/pipeline/reranker.py](backend/app/pipeline/reranker.py): declines with the canonical "not enough information" message when the top rerank score is below `RELEVANCE_THRESHOLD`, or when retrieval is empty.
+- **Generator** — [backend/app/pipeline/generator.py](backend/app/pipeline/generator.py): OpenAI `gpt-4o` (configurable) with retry-wrapped `generate()` and async `stream()`; model/temperature/max_tokens are pulled from the prompt config.
+- **Citation resolver** — [backend/app/pipeline/citation_resolver.py](backend/app/pipeline/citation_resolver.py): `assemble_context()` injects `[SOURCE_N]` headers with document / section / page; `resolve_citations()` parses the generated text and returns `Citation` objects with full metadata and rerank/RRF scores.
+- **Prompt loader** — [backend/app/utils/prompt_loader.py](backend/app/utils/prompt_loader.py): tenant-DB override > global-DB prompt > YAML file ([backend/prompts/rag_generation_v1.yaml](backend/prompts/rag_generation_v1.yaml)).
+- **Query orchestrator** — [backend/app/pipeline/query_pipeline.py](backend/app/pipeline/query_pipeline.py): shared `prepare_query()` that runs embed → hybrid retrieve → rerank → guardrail → context assembly, returning a `PreparedQuery` reused by both the sync and streaming endpoints. Tracks per-step latency in `RetrievalMetadata.latency_ms`.
 
 ### Evaluation pipeline (Phase 3)
 
@@ -67,30 +82,32 @@ Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ RRF) → Rerank → Gu
 Golden Dataset → Live Query Pipeline → Ragas + Custom Metrics → Threshold Check → Reports + DB History + CI Gate
 ```
 
-- **Golden dataset loader** — [eval/dataset.py](eval/dataset.py): loads versioned JSON datasets from [eval/datasets/](eval/datasets/) into typed `GoldenDataset` / `GoldenSample` objects.
-- **Seed dataset** — [eval/datasets/golden_v1.0.0.json](eval/datasets/golden_v1.0.0.json): checked-in Phase 3 starter corpus with version metadata and sample changelog support via [eval/datasets/CHANGELOG.md](eval/datasets/CHANGELOG.md). This is a seed set of 14 samples, not yet the 50+ sample target from the spec.
-- **Synthetic dataset generation** — [eval/generate.py](eval/generate.py): Ragas `TestsetGenerator` CLI that drafts tenant-specific samples from ingested chunks and writes them to a review-required JSON file.
-- **Pipeline adapter** — [eval/pipeline_adapter.py](eval/pipeline_adapter.py): runs the real Phase 2 query flow per sample and captures answer text, citations, retrieved contexts, latency, rerank score, model, and prompt version.
-- **Ragas runner** — [eval/ragas_runner.py](eval/ragas_runner.py): lazy, optional wrapper around Faithfulness, Answer Relevancy, Context Precision, and Context Recall using `gpt-4o-mini` by default.
-- **Custom metrics** — [eval/metrics/](eval/metrics/): adds citation coverage, decline accuracy for unanswerable prompts, and latency compliance on top of the core Ragas metrics.
-- **Thresholding + aggregation** — [eval/thresholds.py](eval/thresholds.py) and [eval/aggregator.py](eval/aggregator.py): combines per-sample scores into run-level pass/fail results using YAML-configured thresholds and a minimum passing-rate rule. `context_recall` and `latency_compliance` are currently warning-only in the default config.
-- **Runner + reports** — [eval/run.py](eval/run.py) and [eval/report.py](eval/report.py): executes the full evaluation concurrently, persists results, and writes JSON + Markdown reports under [eval/reports/](eval/reports/).
-- **Run history tools** — [eval/history.py](eval/history.py) and [eval/compare.py](eval/compare.py): CLI helpers for listing recent runs and comparing two runs side by side.
+- **Golden dataset loader** — [backend/eval/dataset.py](backend/eval/dataset.py): loads versioned JSON datasets from [backend/eval/datasets/](backend/eval/datasets/) into typed `GoldenDataset` / `GoldenSample` objects.
+- **Seed dataset** — [backend/eval/datasets/golden_v1.0.0.json](backend/eval/datasets/golden_v1.0.0.json): checked-in Phase 3 starter corpus with version metadata and sample changelog support via [backend/eval/datasets/CHANGELOG.md](backend/eval/datasets/CHANGELOG.md). This is a seed set of 14 samples, not yet the 50+ sample target from the spec.
+- **Synthetic dataset generation** — [backend/eval/generate.py](backend/eval/generate.py): Ragas `TestsetGenerator` CLI that drafts tenant-specific samples from ingested chunks and writes them to a review-required JSON file.
+- **Pipeline adapter** — [backend/eval/pipeline_adapter.py](backend/eval/pipeline_adapter.py): runs the real Phase 2 query flow per sample and captures answer text, citations, retrieved contexts, latency, rerank score, model, and prompt version.
+- **Ragas runner** — [backend/eval/ragas_runner.py](backend/eval/ragas_runner.py): lazy, optional wrapper around Faithfulness, Answer Relevancy, Context Precision, and Context Recall using `gpt-4o-mini` by default.
+- **Custom metrics** — [backend/eval/metrics/](backend/eval/metrics/): adds citation coverage, decline accuracy for unanswerable prompts, and latency compliance on top of the core Ragas metrics.
+- **Thresholding + aggregation** — [backend/eval/thresholds.py](backend/eval/thresholds.py) and [backend/eval/aggregator.py](backend/eval/aggregator.py): combines per-sample scores into run-level pass/fail results using YAML-configured thresholds and a minimum passing-rate rule. `context_recall` and `latency_compliance` are currently warning-only in the default config.
+- **Runner + reports** — [backend/eval/run.py](backend/eval/run.py) and [backend/eval/report.py](backend/eval/report.py): executes the full evaluation concurrently, persists results, and writes JSON + Markdown reports under [backend/eval/reports/](backend/eval/reports/).
+- **Run history tools** — [backend/eval/history.py](backend/eval/history.py) and [backend/eval/compare.py](backend/eval/compare.py): CLI helpers for listing recent runs and comparing two runs side by side.
 
 ### Hosted platform (Phase 4)
 
 ```
-Dashboard JWT Auth → Integrations + API Keys → /v1 Hosted API → KB-scoped Query/Ingestion → Audit + Usage Logs
+Dashboard JWT Auth → Integrations + API Keys → /v1 Hosted API → Integration-scoped Query/Ingestion → Audit + Usage Logs
 ```
 
-- **Platform auth** — [app/api/platform_auth.py](app/api/platform_auth.py): resolves `Authorization: Bearer <api_key>` into `(tenant_id, integration_id, api_key_id)` and enforces per-key scopes such as `query:read`, `documents:write`, and `analytics:read`.
-- **Dashboard platform management** — [app/api/platform.py](app/api/platform.py): JWT-authenticated control-plane endpoints for creating integrations, minting/revoking API keys, and listing platform credentials.
-- **Hosted `/v1` API** — [app/api/public_v1.py](app/api/public_v1.py): API-key-authenticated knowledge base, document, connector, query, streaming query, job, usage, and audit-log routes.
-- **Knowledge-base scoping** — [app/pipeline/query_pipeline.py](app/pipeline/query_pipeline.py), [app/pipeline/retriever_dense.py](app/pipeline/retriever_dense.py), and [app/pipeline/retriever_sparse.py](app/pipeline/retriever_sparse.py): retrieval is now scoped by both `tenant_id` and selected `knowledge_base_id(s)`.
-- **Extended ingestion metadata** — [app/pipeline/orchestrator.py](app/pipeline/orchestrator.py) and [app/pipeline/upserter.py](app/pipeline/upserter.py): ingestion records and document rows now carry `knowledge_base_id`, `source_type`, and `source_id`.
-- **Platform security helpers** — [app/utils/platform_security.py](app/utils/platform_security.py): HMAC hashes API keys at rest and encrypts connector configuration blobs.
-- **Observability helpers** — [app/utils/platform_observability.py](app/utils/platform_observability.py): writes `audit_logs` and `request_logs` rows for hosted operations.
-- **Server SDK** — [sdk/python/ragfier_sdk.py](sdk/python/ragfier_sdk.py): async SDK client for `/v1/query`, `/v1/query/stream`, uploads, job polling, KB listing, and connector sync triggers.
+- **Platform auth** — [backend/app/api/platform_auth.py](backend/app/api/platform_auth.py): resolves `Authorization: Bearer <api_key>` into `(tenant_id, integration_id, api_key_id)` and enforces per-key scopes such as `query:read`, `documents:write`, and `analytics:read`.
+- **Dashboard platform management** — [backend/app/api/platform.py](backend/app/api/platform.py): JWT-authenticated control-plane endpoints for creating integrations, minting/revoking API keys, and listing platform credentials.
+- **Integration-scoped endpoints** — [backend/app/api/integrations.py](backend/app/api/integrations.py): JWT document upload/list and API-key query/stream endpoints scoped to a named integration (`/v1/integrations/{id}/...`).
+- **Hosted `/v1` API** — [backend/app/api/public_v1.py](backend/app/api/public_v1.py): API-key-authenticated knowledge base, document, connector, flat integration query/stream, job, usage, and audit-log routes.
+- **Integration resolver** — [backend/app/utils/integration_resolver.py](backend/app/utils/integration_resolver.py): resolves an explicit `integration_id` or falls back to the tenant's default global integration (auto-created on first use).
+- **Integration scoping** — [backend/app/pipeline/query_pipeline.py](backend/app/pipeline/query_pipeline.py), [backend/app/pipeline/retriever_dense.py](backend/app/pipeline/retriever_dense.py), and [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py): retrieval is scoped by `tenant_id` and `integration_id`.
+- **Extended ingestion metadata** — [backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py) and [backend/app/pipeline/upserter.py](backend/app/pipeline/upserter.py): ingestion records and document rows carry `integration_id`, `source_type`, and `source_id`.
+- **Platform security helpers** — [backend/app/utils/platform_security.py](backend/app/utils/platform_security.py): HMAC hashes API keys at rest and encrypts connector configuration blobs.
+- **Observability helpers** — [backend/app/utils/platform_observability.py](backend/app/utils/platform_observability.py): writes `audit_logs` and `request_logs` rows for hosted operations.
+- **Server SDK** — [backend/sdk/python/ragfier_sdk.py](backend/sdk/python/ragfier_sdk.py): async SDK client for `/v1/query`, `/v1/query/stream`, uploads, job polling, KB listing, and connector sync triggers.
 
 ## API Endpoints
 
@@ -98,37 +115,41 @@ Dashboard JWT Auth → Integrations + API Keys → /v1 Hosted API → KB-scoped 
 
 | Method | Path | Auth mode | Tenant scope source | Purpose |
 |--------|------|-----------|---------------------|---------|
-| `POST` | `/auth/signup` | Public (no auth) | N/A | Create tenant + user and return JWT |
+| `POST` | `/auth/signup` | Public (no auth) | N/A | Create tenant + user, auto-provision default global integration, return JWT |
 | `POST` | `/auth/login` | Public (no auth) | N/A | Login and return JWT |
 | `GET`  | `/health` | Public (no auth) | N/A | Service health (Supabase, OpenAI, Cohere) |
-| `POST` | `/platform/integrations` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Create a tenant-owned integration for hosted/API-key access |
-| `GET`  | `/platform/integrations` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List integrations for the authenticated tenant |
-| `POST` | `/platform/api-keys` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Create a per-integration API key; returns the secret once |
-| `GET`  | `/platform/api-keys` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List API keys for the authenticated tenant |
-| `POST` | `/platform/api-keys/{api_key_id}/revoke` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Revoke an API key |
-| `POST` | `/ingest` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Upload a PDF or Markdown file; returns `job_id` |
-| `GET`  | `/status/{job_id}` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Poll pipeline progress |
-| `POST` | `/query` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Hybrid retrieval → rerank → generation with resolved `[SOURCE_N]` citations |
-| `POST` | `/query/stream` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Same pipeline, streamed as SSE: `sources` → `token`… → `done` |
-| `POST` | `/eval/run` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Start an evaluation run for the authenticated tenant and dataset version |
-| `GET`  | `/eval/runs` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List recent evaluation runs for the authenticated tenant |
-| `GET`  | `/eval/runs/{run_id}/samples` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Inspect per-sample results for a single evaluation run |
-| `GET`  | `/prompts` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | List tenant + global prompt versions |
-| `POST` | `/prompts` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT (or `X-Tenant-Id` for local testing) | Create a new prompt version (auto-deactivates the previous active one) |
-| `POST` | `/v1/knowledge-bases` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create a hosted knowledge base via API key |
-| `GET`  | `/v1/knowledge-bases` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List hosted knowledge bases available to the API key’s tenant |
-| `POST` | `/v1/documents/upload` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Upload a document into a specific knowledge base |
-| `GET`  | `/v1/documents` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List uploaded documents/jobs for the API key’s tenant |
-| `GET`  | `/v1/documents/{document_id}` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Fetch one document/job summary |
-| `DELETE` | `/v1/documents/{document_id}` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Delete a document and its stored chunks |
-| `POST` | `/v1/query` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Hosted KB-scoped query with request id and usage metadata |
-| `POST` | `/v1/query/stream` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Hosted SSE query API |
-| `POST` | `/v1/connectors/s3` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create an S3 connector record |
-| `POST` | `/v1/connectors/supabase` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create a Supabase connector record |
-| `POST` | `/v1/connectors/{id}/sync` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Create a manual connector sync job |
-| `GET`  | `/v1/jobs/{job_id}` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | Poll a hosted ingestion job |
-| `GET`  | `/v1/usage` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List request-level usage rollups |
-| `GET`  | `/v1/audit-logs` | API key (`Authorization: Bearer <api_key>`) | Tenant resolved from API key record | List hosted audit log entries |
+| `POST` | `/platform/integrations` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Create a tenant-owned integration |
+| `GET`  | `/platform/integrations` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | List integrations (always includes default global integration first) |
+| `POST` | `/platform/api-keys` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Create a per-integration API key; secret returned once, stored as hash |
+| `GET`  | `/platform/api-keys` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | List API keys for the authenticated tenant |
+| `POST` | `/platform/api-keys/{api_key_id}/revoke` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Revoke an API key (idempotent; preserves audit history) |
+| `POST` | `/ingest` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Upload a file; resolves integration from body field or tenant default |
+| `GET`  | `/status/{job_id}` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Poll pipeline progress |
+| `POST` | `/query` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Hybrid retrieval → rerank → generation; resolves integration from body or default |
+| `POST` | `/query/stream` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Same pipeline, streamed as SSE: `sources` → `token`… → `done` |
+| `POST` | `/v1/integrations/{integration_id}/documents` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Upload document into a named integration |
+| `GET`  | `/v1/integrations/{integration_id}/documents` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | List documents in a named integration |
+| `POST` | `/v1/integrations/{integration_id}/query` | API key (`Authorization: Bearer <api_key>`) | Tenant + integration resolved from API key | Query documents scoped to the named integration; key's integration must match path |
+| `POST` | `/v1/integrations/{integration_id}/query/stream` | API key (`Authorization: Bearer <api_key>`) | Tenant + integration resolved from API key | SSE query scoped to the named integration; key must match |
+| `POST` | `/v1/query/integration` | API key (`Authorization: Bearer <api_key>`) | Tenant + integration resolved from API key | Flat integration query; integration resolved from key |
+| `POST` | `/v1/query/integration/stream` | API key (`Authorization: Bearer <api_key>`) | Tenant + integration resolved from API key | Flat integration SSE query; integration resolved from key |
+| `POST` | `/eval/run` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Start an evaluation run |
+| `GET`  | `/eval/runs` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | List recent evaluation runs |
+| `GET`  | `/eval/runs/{run_id}/samples` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Inspect per-sample results for a single evaluation run |
+| `GET`  | `/prompts` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | List tenant + global prompt versions |
+| `POST` | `/prompts` | JWT (`Authorization: Bearer <jwt>`) | `app_metadata.organization_id` in JWT | Create a new prompt version |
+| `POST` | `/v1/knowledge-bases` *(deprecated)* | API key | Tenant resolved from API key | Create a hosted knowledge base |
+| `GET`  | `/v1/knowledge-bases` *(deprecated)* | API key | Tenant resolved from API key | List hosted knowledge bases |
+| `POST` | `/v1/documents/upload` | API key | Tenant resolved from API key | Upload a document into a knowledge base |
+| `GET`  | `/v1/documents` | API key | Tenant resolved from API key | List uploaded documents/jobs |
+| `GET`  | `/v1/documents/{document_id}` | API key | Tenant resolved from API key | Fetch one document/job summary |
+| `DELETE` | `/v1/documents/{document_id}` | API key | Tenant resolved from API key | Delete a document and its stored chunks |
+| `POST` | `/v1/connectors/s3` *(deprecated)* | API key | Tenant resolved from API key | Create an S3 connector record |
+| `POST` | `/v1/connectors/supabase` *(deprecated)* | API key | Tenant resolved from API key | Create a Supabase connector record |
+| `POST` | `/v1/connectors/{id}/sync` *(deprecated)* | API key | Tenant resolved from API key | Create a manual connector sync job |
+| `GET`  | `/v1/jobs/{job_id}` | API key | Tenant resolved from API key | Poll a hosted ingestion job |
+| `GET`  | `/v1/usage` | API key | Tenant resolved from API key | List request-level usage rollups |
+| `GET`  | `/v1/audit-logs` | API key | Tenant resolved from API key | List hosted audit log entries |
 
 JWT-protected endpoints derive tenant context from
 `app_metadata.organization_id` in the bearer token. For local testing only,
@@ -137,18 +158,267 @@ you can override tenant resolution with `X-Tenant-Id`.
 Hosted `/v1` endpoints never trust caller-provided tenant ids; tenant scope is
 resolved from the API key record (`api_keys.tenant_id`) in the database.
 
-### `/query` response shape
+### Integration resolution order
+
+Every endpoint that can target an integration resolves the final integration id
+using this priority:
+
+1. Path parameter `integration_id`
+2. Body or form field `integration_id`
+3. Tenant's default global integration (auto-created on first use if missing)
+
+If the resolved integration does not belong to the authenticated tenant, the
+request fails with `404` to avoid leaking whether another tenant's integration
+exists.
+
+### Authentication model
+
+**Tenant JWT** — control-plane operations (signup, login, create/list
+integrations, create/revoke API keys, upload documents, list jobs, eval runs,
+prompts). The JWT must carry `app_metadata.organization_id`.
+
+**Integration API key** — runtime query traffic. Sent as
+`Authorization: Bearer <api_key>`. The key resolves `tenant_id`,
+`integration_id`, `api_key_id`, and `scopes`. Recommended scopes:
+`query:read`, `documents:read`, `documents:write`, `kb:read`, `kb:write`,
+`analytics:read`.
+
+Both query paths (`/query` JWT and `/v1/integrations/{id}/query` API key) run
+the same retrieval and generation pipeline. Response shape, citation semantics,
+guardrail behaviour, and retrieval metadata are materially equivalent across
+both paths.
+
+### Request and response shapes
+
+#### `POST /auth/signup`
+
+```json
+// request
+{
+  "email": "user@example.com",
+  "password": "secret-password",
+  "tenant_name": "Acme Inc",
+  "tenant_slug": "acme"
+}
+
+// response
+{
+  "message": "auth.signup_succeeded",
+  "access_token": "jwt-token",
+  "token_type": "bearer",
+  "expires_in": 3600,
+  "refresh_token": "optional-refresh-token",
+  "tenant_id": "uuid",
+  "user_id": "uuid-or-null",
+  "email": "user@example.com"
+}
+```
+
+Signup creates the tenant row, the initial user, and the default global
+integration before returning the JWT.
+
+#### `POST /auth/login`
+
+```json
+// request
+{ "email": "user@example.com", "password": "secret-password" }
+
+// response
+{
+  "message": "auth.login_succeeded",
+  "access_token": "jwt-token",
+  "token_type": "bearer",
+  "expires_in": 3600,
+  "refresh_token": "optional-refresh-token",
+  "tenant_id": "uuid",
+  "user_id": "uuid-or-null",
+  "email": "user@example.com"
+}
+```
+
+#### `POST /platform/integrations`
+
+```json
+// request
+{
+  "name": "Support Portal",
+  "environment": "production",
+  "metadata": { "product": "support" }
+}
+
+// response
+{
+  "message": "platform.integration_created",
+  "id": "uuid",
+  "tenant_id": "uuid",
+  "name": "Support Portal",
+  "environment": "production",
+  "metadata": { "product": "support" },
+  "created_at": "2026-04-17T10:30:00Z"
+}
+```
+
+#### `GET /platform/integrations`
 
 ```json
 {
+  "message": "platform.integrations_listed",
+  "integrations": [
+    {
+      "id": "uuid",
+      "tenant_id": "uuid",
+      "name": "Default",
+      "environment": "production",
+      "metadata": {},
+      "created_at": "2026-04-17T10:00:00Z"
+    }
+  ]
+}
+```
+
+The default global integration is always present and listed first.
+
+#### `POST /platform/api-keys`
+
+```json
+// request
+{
+  "integration_id": "uuid",
+  "name": "Prod query key",
+  "scopes": ["query:read", "documents:read"],
+  "expires_at": null
+}
+
+// response
+{
+  "message": "platform.api_key_created",
+  "id": "uuid",
+  "tenant_id": "uuid",
+  "integration_id": "uuid",
+  "name": "Prod query key",
+  "prefix": "rk_live_1234",
+  "secret": "full-secret-returned-once",
+  "scopes": ["query:read", "documents:read"],
+  "status": "active",
+  "expires_at": null,
+  "last_used_at": null,
+  "created_at": "2026-04-17T10:35:00Z"
+}
+```
+
+The `secret` is returned exactly once and stored only as an HMAC hash.
+
+#### `POST /platform/api-keys/{api_key_id}/revoke`
+
+```json
+{
+  "message": "platform.api_key_revoked",
+  "id": "uuid",
+  "tenant_id": "uuid",
+  "integration_id": "uuid",
+  "name": "Prod query key",
+  "prefix": "rk_live_1234",
+  "scopes": ["query:read", "documents:read"],
+  "status": "revoked",
+  "expires_at": null,
+  "last_used_at": "2026-04-17T10:50:00Z",
+  "created_at": "2026-04-17T10:35:00Z"
+}
+```
+
+Revocation is idempotent. The record is retained for audit history.
+
+#### `POST /ingest` · `POST /v1/integrations/{id}/documents`
+
+`multipart/form-data` — `file` required, `integration_id` optional (form field),
+`document_title` optional, `metadata` optional JSON string.
+
+```json
+// response
+{
+  "message": "platform.document_uploaded",
+  "job_id": "uuid",
+  "integration_id": "uuid",
+  "status": "pending",
+  "file_name": "contract.pdf"
+}
+```
+
+The pipeline (parse → chunk → embed → upsert) runs asynchronously. Each file
+produces exactly one ingestion job. `integration_id` is persisted on both the
+job and every resulting document chunk.
+
+#### `GET /v1/integrations/{id}/documents`
+
+```json
+{
+  "message": "platform.documents_listed",
+  "documents": [
+    {
+      "id": "job-or-document-id",
+      "tenant_id": "uuid",
+      "integration_id": "uuid",
+      "file_name": "contract.pdf",
+      "document_title": "Master Services Agreement",
+      "source_type": "upload",
+      "status": "completed",
+      "chunk_count": 42,
+      "created_at": "2026-04-17T10:40:00Z"
+    }
+  ]
+}
+```
+
+#### `GET /v1/jobs/{job_id}` · `GET /status/{job_id}`
+
+```json
+{
+  "message": "platform.job_fetched",
+  "job_id": "uuid",
+  "status": "embedding",
+  "file_name": "contract.pdf",
+  "total_chunks": 42,
+  "processed_chunks": 18,
+  "error_message": null,
+  "created_at": "2026-04-17T10:40:00Z",
+  "updated_at": "2026-04-17T10:42:00Z"
+}
+```
+
+#### `POST /query` · `POST /v1/integrations/{id}/query` · `POST /v1/query/integration`
+
+```json
+// request
+{
+  "query": "What is the liability cap?",
+  "integration_id": "uuid-or-omitted",
+  "match_count": 5,
+  "rerank": true,
+  "include_sources": true,
+  "prompt_name": "rag_generation_v1",
+  "external_user_id": "end-user-123",
+  "session_id": "session-abc",
+  "tags": ["legal", "support"]
+}
+
+// response
+{
+  "message": "query.completed",
+  "request_id": "uuid",
   "query": "What is the liability cap?",
   "answer": "The liability cap shall not exceed $1,000,000 [SOURCE_1]...",
   "citations": [
     {
       "source_id": "SOURCE_1",
-      "chunk_id": "…",
-      "content": "The liability cap shall not exceed…",
-      "metadata": { "source": "contract.pdf", "page_number": 5, "bounding_boxes": [[72,340,540,380]], "section_heading": "Section 3.2 — Limitation of Liability", "document_title": "Master Services Agreement" },
+      "chunk_id": "uuid",
+      "content": "The liability cap shall not exceed...",
+      "metadata": {
+        "source": "contract.pdf",
+        "page_number": 5,
+        "bounding_boxes": [[72, 340, 540, 380]],
+        "section_heading": "Section 3.2 — Limitation of Liability",
+        "document_title": "Master Services Agreement"
+      },
       "rerank_score": 0.95,
       "rrf_score": 0.032
     }
@@ -163,15 +433,28 @@ resolved from the API key record (`api_keys.tenant_id`) in the database.
     "reranker_provider": "cohere",
     "latency_ms": { "embedding": 45, "retrieval": 50, "reranking": 380, "generation": 1200, "total": 1677 }
   },
-  "declined": false
+  "declined": false,
+  "usage": {
+    "input_tokens": 132,
+    "output_tokens": 84,
+    "total_tokens": 216,
+    "estimated_cost_usd": 0.0124
+  }
 }
 ```
 
-### `/query/stream` SSE events
+Query routing rules:
+
+- `POST /query` with JWT and no `integration_id` → default global integration
+- `POST /query` with JWT and explicit `integration_id` → that integration (must belong to tenant)
+- `POST /v1/query/integration` with API key → key's own integration
+- `POST /v1/integrations/{id}/query` with API key → named integration; key's integration must match the path id
+
+#### `/query/stream` · `/v1/integrations/{id}/query/stream` · `/v1/query/integration/stream` SSE events
 
 ```
 event: sources
-data: {"citations": [...]}          ← sent before generation begins
+data: {"citations": [...]}          ← emitted before generation begins
 
 event: token
 data: The
@@ -183,21 +466,29 @@ event: done
 data: {"retrieval_metadata": {...}, "declined": false}
 ```
 
-The `sources` event lets a frontend render citation cards while tokens
-stream in. Declines emit a single synthetic `token` event followed by
-`done` with `declined: true`.
+The `sources` event lets a frontend render citation cards while tokens stream
+in. Declines emit a single synthetic `token` event followed by `done` with
+`declined: true`.
 
-### `/v1/query` response additions
+#### Error response shape
 
-Hosted queries return the same answer/citation payload as `/query`, plus:
+```json
+{
+  "message": "platform_auth.invalid_api_key",
+  "detail": "optional detail"
+}
+```
 
-- `request_id`: stable request identifier for auditing and support
-- `usage`: token counts and an estimated cost field
+Common status codes: `400` malformed, `401` missing/invalid credential,
+`403` insufficient scope, `404` not found, `413` file too large, `422`
+validation error, `500` internal error.
 
-Public request bodies accept `knowledge_base_ids`, `external_user_id`,
-`session_id`, and `tags` for tenant-side attribution.
+Representative error message keys: `auth.missing_bearer_token`,
+`auth.missing_organization_id`, `platform_auth.invalid_api_key`,
+`platform_auth.insufficient_scope`, `integration.integration_not_found`,
+`document.document_not_found`, `ingest.file_too_large`, `query.pipeline_failed`.
 
-### `/eval` workflow
+### `/eval` API workflow
 
 - `POST /eval/run` accepts a dataset version or path, pre-creates an `eval_runs` row, and schedules the evaluation in a background task.
 - `GET /eval/runs` returns aggregate scores such as `faithfulness_avg`, `answer_relevancy_avg`, `citation_coverage_avg`, and pass/fail status for the tenant.
@@ -207,81 +498,102 @@ Public request bodies accept `knowledge_base_ids`, `external_user_id`,
 
 ```
 RAGfier/
-├── app/
-│   ├── main.py                  FastAPI app + lifespan
-│   ├── config.py                Pydantic Settings (Phase 1 + Phase 2 + Phase 3 + Phase 4)
-│   ├── cli/                      package-native operational CLIs
-│   │   └── purge_supabase_bucket.py canonical storage-purge command
-│   ├── api/
-│   │   ├── ingest.py            POST /ingest
-│   │   ├── status.py            GET /status/{job_id}
-│   │   ├── query.py             POST /query  (hybrid + rerank + generation)
-│   │   ├── query_stream.py      POST /query/stream  (SSE)
-│   │   ├── platform.py          JWT-authenticated integrations + API key management
-│   │   ├── platform_auth.py     API key resolution + scope enforcement
-│   │   ├── public_v1.py         Hosted /v1 API surface
-│   │   ├── eval.py              POST /eval/run, GET /eval/runs, GET /eval/runs/{id}/samples
-│   │   ├── prompts.py           GET/POST /prompts
-│   │   ├── health.py            GET /health
-│   │   └── auth.py              JWT tenant resolution
-│   ├── pipeline/
-│   │   ├── parser.py            LlamaParse + MD
-│   │   ├── chunker.py           recursive character splitter
-│   │   ├── embedder.py          OpenAI batch embeddings
-│   │   ├── upserter.py          Supabase batch upsert
-│   │   ├── orchestrator.py      Ingestion orchestrator
-│   │   ├── retriever_dense.py   pgvector cosine
-│   │   ├── retriever_sparse.py  tsvector BM25 + HybridRetriever RPC client
-│   │   ├── fusion.py            Reciprocal Rank Fusion
-│   │   ├── reranker.py          Cohere + local cross-encoder
-│   │   ├── generator.py         gpt-4o generation + streaming
-│   │   ├── citation_resolver.py [SOURCE_N] assembly + resolution
-│   │   └── query_pipeline.py    embed → retrieve → rerank → guardrail
-│   ├── models/                  schemas.py (Pydantic), database.py (Supabase clients)
-│   └── utils/                   logger, token_counter, prompt_loader, platform_security, platform_observability
-├── eval/
-│   ├── datasets/                versioned golden datasets + changelog
-│   ├── config/thresholds.yaml   evaluation thresholds + blocking rules
-│   ├── metrics/                 citation coverage, decline accuracy, latency compliance
-│   ├── run.py                   evaluation runner CLI
-│   ├── generate.py              synthetic dataset generation CLI
-│   ├── history.py               list recent evaluation runs
-│   ├── compare.py               compare two evaluation runs
-│   ├── ragas_runner.py          Ragas metric wrapper
-│   ├── pipeline_adapter.py      bridge to the production query pipeline
-│   └── report.py                JSON + Markdown report writer
-├── .github/workflows/
-│   └── rag-evaluation.yml       CI quality gate for evaluation regressions
-├── prompts/
-│   └── rag_generation_v1.yaml   default citation-enforced prompt
-├── sdk/
-│   └── python/
-│       └── ragfier_sdk.py       async hosted API client
-├── sql/
-│   ├── admin/                   destructive manual reset SQL
-│   ├── migrations/              versioned SQL up/down migrations (source of truth)
-│   └── schema.sql               consolidated head snapshot (regenerated, not hand-edited)
-├── scripts/
-│   ├── run-migrations.sh        local dbmate wrapper (up/rollback/status/new)
-│   ├── dump-schema.sh           regenerate sql/schema.sql from the live DB
-│   ├── reset-environment.sh     purge bucket then truncate DB
-│   ├── truncate-all-tables.sh   destructive DB reset helper
-│   └── purge-supabase-bucket.py compatibility wrapper for package CLI
-├── tests/                       69 tests including hosted platform + SDK coverage
-├── Dockerfile / docker-compose.yml
-├── requirements.txt / pyproject.toml
-└── .env.example
+├── backend/
+│   ├── app/
+│   │   ├── main.py                  FastAPI app + lifespan
+│   │   ├── config.py                Pydantic Settings (all phases)
+│   │   ├── cli/
+│   │   │   └── purge_supabase_bucket.py  canonical storage-purge command
+│   │   ├── api/
+│   │   │   ├── auth.py              POST /auth/signup, /auth/login; JWT resolution
+│   │   │   ├── ingest.py            POST /ingest  (JWT, integration-aware)
+│   │   │   ├── status.py            GET /status/{job_id}
+│   │   │   ├── query.py             POST /query  (JWT, resolves default integration)
+│   │   │   ├── query_stream.py      POST /query/stream  (SSE, JWT)
+│   │   │   ├── platform.py          JWT control-plane: integrations + API key management
+│   │   │   ├── platform_auth.py     API key resolution + scope enforcement
+│   │   │   ├── integrations.py      /v1/integrations/{id}/documents, /query, /query/stream
+│   │   │   ├── public_v1.py         Hosted /v1 API surface (KB-centric + flat query endpoints)
+│   │   │   ├── eval.py              POST /eval/run, GET /eval/runs, GET /eval/runs/{id}/samples
+│   │   │   ├── prompts.py           GET/POST /prompts
+│   │   │   └── health.py            GET /health
+│   │   ├── pipeline/
+│   │   │   ├── parser.py            LlamaParse + MD
+│   │   │   ├── chunker.py           recursive character splitter
+│   │   │   ├── embedder.py          OpenAI batch embeddings
+│   │   │   ├── upserter.py          Supabase batch upsert
+│   │   │   ├── orchestrator.py      ingestion orchestrator
+│   │   │   ├── retriever_dense.py   pgvector cosine (integration-scoped)
+│   │   │   ├── retriever_sparse.py  tsvector BM25 + HybridRetriever (integration-scoped)
+│   │   │   ├── fusion.py            Reciprocal Rank Fusion
+│   │   │   ├── reranker.py          Cohere + local cross-encoder
+│   │   │   ├── generator.py         gpt-4o generation + streaming
+│   │   │   ├── citation_resolver.py [SOURCE_N] assembly + resolution
+│   │   │   └── query_pipeline.py    embed → retrieve → rerank → guardrail
+│   │   ├── models/
+│   │   │   ├── schemas.py           Pydantic request/response models
+│   │   │   └── database.py          Supabase + OpenAI client singletons
+│   │   └── utils/
+│   │       ├── api_errors.py        error helpers
+│   │       ├── integration_resolver.py  default-integration resolution + auto-creation
+│   │       ├── logger.py            structured logging
+│   │       ├── messages.py          i18n message keys
+│   │       ├── platform_observability.py  audit + request log writers
+│   │       ├── platform_security.py HMAC key hashing + config encryption
+│   │       ├── prompt_loader.py     prompt loading with tenant override
+│   │       └── token_counter.py     tiktoken wrapper
+│   ├── eval/
+│   │   ├── datasets/                versioned golden datasets + CHANGELOG.md
+│   │   ├── config/thresholds.yaml   evaluation thresholds + blocking rules
+│   │   ├── metrics/                 citation coverage, decline accuracy, latency compliance
+│   │   ├── run.py                   evaluation runner CLI
+│   │   ├── generate.py              synthetic dataset generation CLI
+│   │   ├── history.py               list recent evaluation runs
+│   │   ├── compare.py               compare two evaluation runs
+│   │   ├── ragas_runner.py          Ragas metric wrapper
+│   │   ├── pipeline_adapter.py      bridge to the production query pipeline
+│   │   └── report.py                JSON + Markdown report writer
+│   ├── config/
+│   │   ├── config.defaults.json     non-sensitive runtime defaults
+│   │   └── messages.json            API message keys
+│   ├── prompts/
+│   │   └── rag_generation_v1.yaml   default citation-enforced prompt
+│   ├── sdk/
+│   │   └── python/
+│   │       └── ragfier_sdk.py       async hosted API client
+│   ├── sql/
+│   │   ├── admin/                   destructive manual reset SQL
+│   │   ├── migrations/              versioned SQL up/down migrations (source of truth)
+│   │   └── schema.sql               consolidated head snapshot (regenerated, not hand-edited)
+│   ├── scripts/
+│   │   ├── run-migrations.sh        local dbmate wrapper (up/rollback/status/new)
+│   │   ├── dump-schema.sh           regenerate sql/schema.sql from the live DB
+│   │   ├── reset-environment.sh     purge bucket then truncate DB
+│   │   ├── truncate-all-tables.sh   destructive DB reset helper
+│   │   └── purge-supabase-bucket.py backward-compatible wrapper for package CLI
+│   ├── tests/                       69 tests — all unit and integration coverage
+│   ├── Dockerfile                   backend container image
+│   ├── requirements.txt
+│   ├── pyproject.toml
+│   └── .env.example
+├── frontend/                        Frontend workspace (placeholder)
+│   └── .gitkeep
+├── docker-compose.yml               Multi-service compose: migrate + backend + frontend stub
+└── README.md
 ```
 
 ## Quickstart
 
 ```bash
-# 1. Environment
+# 1. Clone and enter the backend workspace
+cd backend
+
+# 2. Environment
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
 
-# 2. Configure
+# 3. Configure
 cp .env.example .env
 # Required: SUPABASE_*, SUPABASE_DB_URL, OPENAI_API_KEY, LLAMA_CLOUD_API_KEY
 # Phase 2:  COHERE_API_KEY (or set RERANKER_PROVIDER=local)
@@ -294,22 +606,22 @@ cp .env.example .env
 #           PLATFORM_API_KEY_PREFIX, PLATFORM_DEFAULT_BASE_URL
 
 # Non-sensitive defaults are versioned in:
-#   config/config.defaults.json
+#   backend/config/config.defaults.json
 # You can override any of them via env vars or .env
 
-# 3. Database migrations
-#    Apply all pending migrations:
+# 4. Database migrations (run from backend/)
 ./scripts/run-migrations.sh up
 
-# 4. Run
+# 5. Run
 uvicorn app.main:app --reload --port 8000
 
-# 5. Docker
+# 6. Docker (from repo root)
+cd ..
 docker compose up --build
 ```
 
-`docker compose up --build` now runs the migration container first and only
-starts the API after pending migrations succeed.
+`docker compose up --build` runs the migration container first and only
+starts the backend after pending migrations succeed.
 
 ## Docker
 
@@ -318,10 +630,10 @@ Use Docker when you want the API and migration runner to start together.
 ### Prerequisites
 
 - Docker Desktop or Docker Engine with `docker compose`
-- A populated `.env` file based on `.env.example`
+- A populated `backend/.env` file based on `backend/.env.example`
 - A valid `SUPABASE_DB_URL` Postgres connection string
 
-### Required `.env` values
+### Required `backend/.env` values
 
 At minimum, set:
 
@@ -345,9 +657,9 @@ docker compose up --build
 
 What happens:
 
-1. Docker builds the `api` image
+1. Docker builds the `backend` image from `backend/Dockerfile`
 2. The `migrate` service validates `SUPABASE_DB_URL`
-3. Pending SQL migrations in `sql/migrations/` are applied
+3. Pending SQL migrations in `backend/sql/migrations/` are applied
 4. The FastAPI app starts on `http://localhost:8000`
 
 ### Start in the background
@@ -362,10 +674,10 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
-To follow only the API logs:
+To follow only the backend logs:
 
 ```bash
-docker compose logs -f api
+docker compose logs -f backend
 ```
 
 ### Stop the stack
@@ -380,40 +692,55 @@ docker compose down
 docker compose up --build --force-recreate
 ```
 
+### Frontend service
+
+The `frontend` service is defined but commented out in `docker-compose.yml`.
+Once the frontend is implemented under `frontend/`, uncomment that block and
+fill in the correct `build.dockerfile` path. The stub is pre-wired with:
+
+```yaml
+environment:
+  - NEXT_PUBLIC_API_URL=http://backend:8000
+depends_on:
+  - backend
+```
+
 ### Common Docker gotchas
 
-- Do not use `localhost`, `127.0.0.1`, or `::1` inside `SUPABASE_DB_URL` for the containerized migration step
+- Do not use `localhost`, `127.0.0.1`, or `::1` inside `SUPABASE_DB_URL` for the containerised migration step
 - For hosted Supabase, use `db.<project-ref>.supabase.co`
 - For a database running on your machine, use `host.docker.internal`
 
 ## Database Migrations
 
 Schema changes are managed exclusively through versioned SQL migrations in
-`sql/migrations/`. `sql/schema.sql` is a consolidated head snapshot that mirrors
-the current database after every migration has been applied — it exists for
-code review, onboarding, and drift detection, and is regenerated by
-`./scripts/dump-schema.sh` (never hand-edited). Do not apply `sql/schema.sql`
-directly in Supabase.
+`backend/sql/migrations/`. `backend/sql/schema.sql` is a consolidated head
+snapshot that mirrors the current database after every migration has been
+applied — it exists for code review, onboarding, and drift detection, and is
+regenerated by `./scripts/dump-schema.sh` (never hand-edited). Do not apply
+`backend/sql/schema.sql` directly in Supabase.
+
+All migration commands below are run from inside `backend/`.
 
 ### Migration prerequisites
 
-Add `SUPABASE_DB_URL` to `.env`. This must be a Postgres connection string,
-not the REST API URL. Example shape:
+Add `SUPABASE_DB_URL` to `backend/.env`. This must be a Postgres connection
+string, not the REST API URL. Example shape:
 
 ```dotenv
 SUPABASE_DB_URL=postgres://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
 ```
 
-### Apply migrations locally
+### Apply migrations
 
 ```bash
-chmod +x scripts/run-migrations.sh
+cd backend
 ./scripts/run-migrations.sh up
 ```
 
 The helper script will:
 
-- Load `.env`
+- Load `backend/.env`
 - Read `SUPABASE_DB_URL`
 - Use a local `dbmate` install if available
 - Fall back to the official `ghcr.io/amacneil/dbmate` container if Docker is installed
@@ -448,30 +775,23 @@ Every migration file must include both sections:
 
 ### Regenerate the schema snapshot
 
-After adding or editing a migration, regenerate `sql/schema.sql` so the
-committed snapshot stays aligned with the database:
-
 ```bash
 ./scripts/run-migrations.sh up   # apply the new migration
 ./scripts/dump-schema.sh         # re-render sql/schema.sql from the live DB
 git add sql/migrations/<new-file>.sql sql/schema.sql
 ```
 
-CI should diff `sql/schema.sql` against the output of `dump-schema.sh` and
-fail the build on drift — this catches a migration that was merged without
-the corresponding schema snapshot refresh.
-
-### Docker startup behavior
+### Docker startup behaviour
 
 `docker compose up --build` runs:
 
 1. `migrate` service using `ghcr.io/amacneil/dbmate`
 2. Validates `SUPABASE_DB_URL` inside the container and runs `dbmate up`
-3. `api` service only after migrations complete successfully
+3. `backend` service only after migrations complete successfully
 
 ### Troubleshooting Docker migrations
 
-If you see an error like:
+If you see:
 
 ```text
 Error: unable to connect to database: dial tcp [::1]:5432: connect: connection refused
@@ -482,7 +802,7 @@ that usually means the migration container did not receive a usable
 
 Check these exactly:
 
-1. `.env` contains `SUPABASE_DB_URL=postgres://...`
+1. `backend/.env` contains `SUPABASE_DB_URL=postgres://...`
 2. The hostname inside `SUPABASE_DB_URL` is not `localhost`, `127.0.0.1`, or `::1`
 3. For hosted Supabase, use the project Postgres host like `db.<project-ref>.supabase.co`
 4. For a database running on your machine, use `host.docker.internal` instead of `localhost`
@@ -493,62 +813,43 @@ Two destructive reset utilities are included for explicit operational use.
 They are intentionally separate from `sql/migrations/` so they never run as
 part of normal schema migration startup.
 
+Run all scripts from inside `backend/`.
+
 Before using any of these scripts:
 
 - Confirm you are targeting the correct Supabase project
-- Confirm `.env` points at the intended environment
+- Confirm `backend/.env` points at the intended environment
 - Treat these commands as destructive and non-routine
 
 ### Truncate all application tables
 
 SQL source:
 
-- [sql/admin/202604160101_truncate_all_tables.sql](sql/admin/202604160101_truncate_all_tables.sql)
+- [backend/sql/admin/202604160101_truncate_all_tables.sql](backend/sql/admin/202604160101_truncate_all_tables.sql)
 
 Wrapper:
 
 ```bash
+cd backend
 chmod +x scripts/truncate-all-tables.sh
 ./scripts/truncate-all-tables.sh --yes
 ```
 
 Behavior:
 
-- Loads `.env`
+- Loads `backend/.env`
 - Requires `SUPABASE_DB_URL`
 - Executes the SQL file with `psql`
 - Falls back to a disposable `postgres:16-alpine` container if `psql` is not installed
 - Truncates `eval_sample_results`, `eval_runs`, `prompt_versions`, `documents`, `ingestion_jobs`, and `tenants`
 
-Use this only in development, test, or carefully controlled admin workflows.
-
 ### Empty the Supabase Storage bucket
 
 Storage deletion must go through the Supabase Storage API, not direct SQL.
-Supabase explicitly warns that deleting storage objects via SQL can orphan
-files in the bucket.
 
 #### CLI execution standard (recommended)
 
-Operational Python commands in this repository should run as package modules
-from the repository root (for example `python -m ...`) instead of as direct
-file paths (`python scripts/...`).
-
-Why this is the standard in this repo:
-
-- Predictable import behavior: module execution resolves imports via package boundaries.
-- Better portability: commands behave the same in local shells, CI jobs, and containers.
-- Cleaner ownership: one canonical implementation in package code, optional wrappers for compatibility.
-
-Canonical implementation for bucket purge lives in:
-
-- `app/cli/purge_supabase_bucket.py`
-
-Compatibility wrapper remains available at:
-
-- `scripts/purge-supabase-bucket.py`
-
-Script:
+Run from inside `backend/`:
 
 ```bash
 python -m app.cli.purge_supabase_bucket --yes
@@ -572,13 +873,6 @@ Optional bucket override:
 python -m app.cli.purge_supabase_bucket --yes --bucket documents
 ```
 
-Behavior:
-
-- Loads `.env`
-- Requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
-- Uses `SUPABASE_STORAGE_BUCKET` by default
-- Calls the official Supabase Storage API to empty the bucket
-
 #### Command matrix
 
 | Command form | Status | Notes |
@@ -587,35 +881,10 @@ Behavior:
 | `python scripts/purge-supabase-bucket.py --yes` | Supported | Backward-compatible wrapper |
 | `ragfier-purge-bucket --yes` | Supported | Requires project install with entry points |
 
-#### Troubleshooting
-
-If you see:
-
-```text
-ModuleNotFoundError: No module named 'app'
-```
-
-use the module form from repo root:
-
-```bash
-python -m app.cli.purge_supabase_bucket --yes
-```
-
-If `ragfier-purge-bucket` is not found, install the project in your current
-environment:
-
-```bash
-python -m pip install -e .
-```
-
-If `python -m pip` itself fails, recreate the virtual environment so `pip`
-is present, then reinstall dependencies.
-
 ### Full environment reset
 
-Wrapper:
-
 ```bash
+cd backend
 chmod +x scripts/reset-environment.sh
 ./scripts/reset-environment.sh --yes
 ```
@@ -626,17 +895,14 @@ Behavior:
 - Truncates all application tables second
 - Stops immediately if either step fails
 
-Implementation detail:
-
-- `scripts/reset-environment.sh` now runs `python3 -m app.cli.purge_supabase_bucket --yes`
-  from repo root before truncation, so it uses the same canonical CLI path.
-
 Equivalent manual order:
 
 1. `python3 -m app.cli.purge_supabase_bucket --yes`
 2. `./scripts/truncate-all-tables.sh --yes`
 
 ## Testing
+
+Run from inside `backend/`:
 
 ```bash
 pytest tests/ -v
@@ -647,7 +913,7 @@ deepeval test run tests/test_rag_evaluation.py --verbose
 Tests use in-memory fakes for Supabase, OpenAI (sync + streaming), and the
 reranker — no network, no real API keys, no Cohere/`sentence-transformers`
 install required for the unit suite. The DeepEval suite is separate and
-intended for Phase 3 quality gating. See [tests/fakes.py](tests/fakes.py).
+intended for Phase 3 quality gating. See [backend/tests/fakes.py](backend/tests/fakes.py).
 
 Suite: **69 tests** — parser, chunker, embedder, ingestion pipeline, API,
 RRF fusion, reranker fallback, generator (sync + streaming), citation
@@ -660,19 +926,19 @@ round-trip.
 
 ### What is implemented
 
-- Versioned golden dataset support via [eval/datasets/golden_v1.0.0.json](eval/datasets/golden_v1.0.0.json).
+- Versioned golden dataset support via [backend/eval/datasets/golden_v1.0.0.json](backend/eval/datasets/golden_v1.0.0.json).
 - Ragas-based scoring for faithfulness, answer relevancy, context precision, and context recall.
 - Custom evaluation metrics for citation coverage, decline accuracy, and latency compliance.
-- Threshold-based pass/fail aggregation with YAML config in [eval/config/thresholds.yaml](eval/config/thresholds.yaml).
-- Persisted evaluation history in `eval_runs` and `eval_sample_results`, added by [sql/migrations/202604160003_phase3_eval_pipeline.sql](sql/migrations/202604160003_phase3_eval_pipeline.sql).
-- Tenant-scoped evaluation APIs in [app/api/eval.py](app/api/eval.py).
+- Threshold-based pass/fail aggregation with YAML config in [backend/eval/config/thresholds.yaml](backend/eval/config/thresholds.yaml).
+- Persisted evaluation history in `eval_runs` and `eval_sample_results`, added by [backend/sql/migrations/202604160003_phase3_eval_pipeline.sql](backend/sql/migrations/202604160003_phase3_eval_pipeline.sql).
+- Tenant-scoped evaluation APIs in [backend/app/api/eval.py](backend/app/api/eval.py).
 - CLI entry points for running, generating, listing, and comparing evaluation runs.
 - GitHub Actions workflow in [.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml).
-- Unit and integration coverage for the Phase 3 pieces in [tests/test_eval_runner.py](tests/test_eval_runner.py), [tests/test_eval_api.py](tests/test_eval_api.py), [tests/test_custom_metrics.py](tests/test_custom_metrics.py), and [tests/test_rag_evaluation.py](tests/test_rag_evaluation.py).
+- Unit and integration coverage in [backend/tests/test_eval_runner.py](backend/tests/test_eval_runner.py), [backend/tests/test_eval_api.py](backend/tests/test_eval_api.py), [backend/tests/test_custom_metrics.py](backend/tests/test_custom_metrics.py), and [backend/tests/test_rag_evaluation.py](backend/tests/test_rag_evaluation.py).
 
 ### Metrics and thresholds
 
-Thresholds live in [eval/config/thresholds.yaml](eval/config/thresholds.yaml) and are overridable per-env; `blocking: true` metrics fail the CI gate, `blocking: false` metrics only warn.
+Thresholds live in [backend/eval/config/thresholds.yaml](backend/eval/config/thresholds.yaml) and are overridable per-env; `blocking: true` metrics fail the CI gate, `blocking: false` metrics only warn.
 
 | Metric | What it measures | Source | Threshold | Blocking |
 |--------|------------------|--------|-----------|----------|
@@ -680,28 +946,19 @@ Thresholds live in [eval/config/thresholds.yaml](eval/config/thresholds.yaml) an
 | Answer Relevancy | How on-topic the answer is vs. the user's question | Ragas | ≥ 0.80 | Yes |
 | Context Precision | Whether relevant chunks are ranked above irrelevant ones | Ragas | ≥ 0.75 | Yes |
 | Context Recall | Whether retrieval surfaced all info needed for the reference | Ragas | ≥ 0.75 | No (warn) |
-| Citation Coverage | % of factual sentences carrying `[SOURCE_N]` anchors | Custom — [eval/metrics/citation_coverage.py](eval/metrics/citation_coverage.py) | ≥ 0.90 | Yes |
-| Decline Accuracy | Correct decline on unanswerable / correct answer on answerable | Custom — [eval/metrics/decline_accuracy.py](eval/metrics/decline_accuracy.py) | ≥ 0.80 | Yes |
-| Latency Compliance | % of queries completing within the configured budget | Custom — [eval/metrics/latency_compliance.py](eval/metrics/latency_compliance.py) | ≥ 0.90 | No (warn) |
+| Citation Coverage | % of factual sentences carrying `[SOURCE_N]` anchors | Custom — [backend/eval/metrics/citation_coverage.py](backend/eval/metrics/citation_coverage.py) | ≥ 0.90 | Yes |
+| Decline Accuracy | Correct decline on unanswerable / correct answer on answerable | Custom — [backend/eval/metrics/decline_accuracy.py](backend/eval/metrics/decline_accuracy.py) | ≥ 0.80 | Yes |
+| Latency Compliance | % of queries completing within the configured budget | Custom — [backend/eval/metrics/latency_compliance.py](backend/eval/metrics/latency_compliance.py) | ≥ 0.90 | No (warn) |
 
-Aggregation additionally enforces `min_passing_rate` (default 0.80) — at least that fraction of samples must pass every blocking metric for the run to pass. Defaults for the judge model and latency budget come from `EVAL_LLM_JUDGE` and `EVAL_LATENCY_BUDGET_MS`.
+Aggregation additionally enforces `min_passing_rate` (default 0.80) — at least that fraction of samples must pass every blocking metric for the run to pass.
 
 ### Golden dataset shape
 
-Golden datasets are versioned JSON under [eval/datasets/](eval/datasets/) with a [CHANGELOG.md](eval/datasets/CHANGELOG.md). Samples are typed as `GoldenSample` in [eval/dataset.py](eval/dataset.py) and expected to span six categories — `exact_match`, `conceptual`, `multi_context`, `unanswerable`, `reasoning`, `adversarial`. The spec targets ≥ 50 manually-reviewed samples; the checked-in `golden_v1.0.0.json` ships 14 seed samples and is expected to be extended via manual curation plus Ragas-generated drafts from [eval/generate.py](eval/generate.py) (synthetic samples must be human-reviewed before inclusion).
-
-Never compare scores across dataset versions; every evaluation run records `dataset_version` alongside its aggregate scores.
-
-### Storage schema
-
-Added by [sql/migrations/202604160003_phase3_eval_pipeline.sql](sql/migrations/202604160003_phase3_eval_pipeline.sql):
-
-- `eval_runs` — one row per evaluation run with `dataset_version`, `trigger`, `git_sha`, `git_branch`, aggregate averages for every metric, the thresholds used, `passed` + `failure_reasons`, `total_samples`, `failed_samples`, `eval_model`, `total_eval_cost_usd`, and `duration_seconds`.
-- `eval_sample_results` — one row per sample per run with `user_input`, `response`, `retrieved_contexts`, `reference`, per-metric scores, latency, chunks retrieved, top rerank score, model used, and prompt version.
-- Indexes on `(tenant_id, created_at DESC)` and `git_sha` on `eval_runs`, and on `eval_run_id` on `eval_sample_results`.
-- RLS enforces `tenant_id = auth.jwt() -> 'app_metadata' ->> 'organization_id'` on both tables.
+Golden datasets are versioned JSON under [backend/eval/datasets/](backend/eval/datasets/) with a [CHANGELOG.md](backend/eval/datasets/CHANGELOG.md). Samples span six categories — `exact_match`, `conceptual`, `multi_context`, `unanswerable`, `reasoning`, `adversarial`. The spec targets ≥ 50 manually-reviewed samples; the checked-in `golden_v1.0.0.json` ships 14 seed samples. Adversarial samples (`category: "adversarial"`) are treated identically to unanswerable ones and are excluded from faithfulness, context precision, and context recall scoring.
 
 ### Local commands
+
+Run from inside `backend/`:
 
 ```bash
 # Run the evaluation runner against the default dataset
@@ -722,15 +979,10 @@ python3 -m eval.compare --run-a <run-uuid> --run-b <run-uuid>
 
 ### CI quality gate
 
-- [.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml) runs on PRs that touch retrieval, query, prompt, SQL, eval, or evaluation-test files.
+- [.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml) triggers on PRs touching `backend/app/pipeline/`, `backend/prompts/`, `backend/sql/`, `backend/eval/`, or `backend/tests/test_rag_evaluation.py`.
+- The workflow sets `defaults.run.working-directory: backend` so all `run:` steps execute inside `backend/` without explicit `cd`.
 - The workflow runs Phase 3 unit tests first, then `deepeval test run tests/test_rag_evaluation.py`.
-- Evaluation reports are uploaded as artifacts when present, and CI includes a post-processing step that attempts to attach git metadata to the latest stored run.
-
-### Current scope boundary
-
-- Phase 3 remains an offline evaluation and CI-gating system.
-- The checked-in dataset is still a seed corpus; the README does not claim the full 50+ manually reviewed golden set target has been reached yet.
-- Phase 4 now includes the hosted backend/API-key layer, but not a full dashboard UI, durable background workers for connector execution, browser/widget delivery, or PDF overlay UX yet.
+- Evaluation reports are uploaded as artifacts from `backend/eval/reports/`.
 
 ## Metadata Schema
 
@@ -760,18 +1012,21 @@ all of this on every `Citation` returned from `/query`.
 
 - Ingestion runs with `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS).
 - Client-facing reads use `anon`/`authenticated` keys; RLS policies in
-  [sql/migrations/](sql/migrations/)
+  [backend/sql/migrations/](backend/sql/migrations/)
   filter on `tenant_id = auth.jwt() -> 'app_metadata' ->> 'organization_id'`.
 - `match_documents` and `match_documents_hybrid` both accept
-  `filter_tenant_id` and now support optional knowledge-base filters for
-  explicit server-side scoping — the query pipeline always passes the
-  resolved tenant, so the LLM never sees cross-tenant chunks.
+  `filter_tenant_id` and `filter_integration_id` for explicit server-side
+  scoping — the query pipeline always passes both, so the LLM never sees
+  cross-tenant or cross-integration chunks.
 - `prompt_versions` supports tenant-specific overrides (`tenant_id = <uuid>`)
   alongside global prompts (`tenant_id IS NULL`); the loader prefers the
   tenant row when both exist.
 - Hosted `/v1` routes do not accept caller-controlled tenant identifiers.
   Tenant scope is derived from the API key record, which also ties every
   public request to an `integration_id` and `api_key_id`.
+- Every tenant is automatically provisioned with a **default global
+  integration** at signup. Requests that omit `integration_id` (ingest,
+  query, stream) resolve to this default automatically.
 
 ## Hosted Platform
 
@@ -779,9 +1034,9 @@ Phase 4 introduces the first hosted control-plane and public API layer.
 
 ### Data model additions
 
-- `knowledge_bases`: tenant-owned logical collections for retrieval and ingestion
-- `integrations`: named app installations or environments under a tenant
+- `integrations`: named app installations or environments under a tenant; one default global integration is auto-provisioned per tenant
 - `api_keys`: per-integration keys with hashed secrets, scopes, expiry, status, and last-used timestamps
+- `knowledge_bases`: tenant-owned logical collections (legacy KB-centric path, deprecated in favour of integration-scoped endpoints)
 - `connector_sources`: tenant-owned S3 or Supabase connector definitions with encrypted config blobs
 - `connector_sync_jobs`: manual sync jobs for connectors
 - `audit_logs`: actor/resource/action trail for hosted operations
@@ -795,12 +1050,6 @@ Phase 4 introduces the first hosted control-plane and public API layer.
 - API keys are hashed at rest and only returned once on creation
 - Connector configs are encrypted before persistence
 - Public routes enforce per-key scopes such as `kb:read`, `documents:write`, `query:read`, and `analytics:read`
-
-### Current connector status
-
-- `POST /v1/connectors/s3` and `POST /v1/connectors/supabase` create managed source records
-- `POST /v1/connectors/{id}/sync` creates a manual sync job
-- External crawling/fetching workers are not implemented yet; this is the hosted schema/API foundation
 
 ### Python SDK example
 
@@ -835,10 +1084,10 @@ Prompts are versioned in `prompt_versions` with audit-friendly history: every
 new `POST /prompts` creates a new row, the previous active row for the same
 `(tenant_id, name)` is deactivated, and deactivated prompts are never
 deleted. Local development can skip the database entirely — the loader falls
-back to `prompts/<name>.yaml`. The default prompt ships as
-[prompts/rag_generation_v1.yaml](prompts/rag_generation_v1.yaml).
+back to `backend/prompts/<name>.yaml`. The default prompt ships as
+[backend/prompts/rag_generation_v1.yaml](backend/prompts/rag_generation_v1.yaml).
 
-YAML prompts can reference centralized settings using `${setting_name}`. Example:
+YAML prompts can reference centralised settings using `${setting_name}`. Example:
 
 ```yaml
 model: ${generation_model}
@@ -852,14 +1101,14 @@ files can stay declarative without duplicating non-sensitive defaults.
 The system prompt hard-constrains the LLM to the provided context, requires
 `[SOURCE_N]` anchors on every factual claim, and mandates an exact decline
 message when the context is insufficient — this is the second layer of
-hallucination defense on top of the relevance-threshold short-circuit.
+hallucination defence on top of the relevance-threshold short-circuit.
 
 ## Phase 1 Deliverables — Status
 
 | # | Deliverable | Status |
 |---|-------------|--------|
 | 1 | Working ingestion pipeline | Done |
-| 2 | Supabase pgvector schema + RLS + HNSW | Done (apply via SQL editor) |
+| 2 | Supabase pgvector schema + RLS + HNSW | Done |
 | 3 | Chunk + embedding storage with metadata | Done |
 | 4 | Retrieval via `match_documents` | Done |
 | 5 | REST API (`/ingest`, `/status`, `/query`, `/health`) | Done |
@@ -871,7 +1120,7 @@ hallucination defense on top of the relevance-threshold short-circuit.
 
 | # | Deliverable | Status |
 |---|-------------|--------|
-| 1 | Full-text search column + GIN index | Done ([sql/migrations/202604160002_phase2_hybrid_query.sql](sql/migrations/202604160002_phase2_hybrid_query.sql)) |
+| 1 | Full-text search column + GIN index | Done ([backend/sql/migrations/202604160002_phase2_hybrid_query.sql](backend/sql/migrations/202604160002_phase2_hybrid_query.sql)) |
 | 2 | `match_documents_hybrid` RRF function | Done |
 | 3 | Cross-encoder reranking (Cohere + local fallback) | Done |
 | 4 | Citation-enforced generation (`[SOURCE_N]` anchors resolved to metadata) | Done |
@@ -880,24 +1129,24 @@ hallucination defense on top of the relevance-threshold short-circuit.
 | 7 | Streaming `/query/stream` (SSE with up-front `sources` event) | Done |
 | 8 | Prompt management (`/prompts` + YAML fallback) | Done |
 | 9 | Per-step latency tracking in response metadata | Done |
-| 10 | Phase 2 test suite (fusion, reranker, generator, citation resolver, E2E) | Done |
+| 10 | Phase 2 test suite | Done |
 
 ## Phase 3 Deliverables — Status
 
 | # | Deliverable | Status |
 |---|-------------|--------|
-| 1 | Golden dataset (v1.0.0) with versioned JSON + CHANGELOG | Done ([eval/datasets/golden_v1.0.0.json](eval/datasets/golden_v1.0.0.json), [eval/datasets/CHANGELOG.md](eval/datasets/CHANGELOG.md)) — seed of 14 samples; expanding toward the ≥50-sample target |
-| 2 | Synthetic test generation pipeline | Done ([eval/generate.py](eval/generate.py)) — Ragas `TestsetGenerator` CLI writes a review-required draft; human review still mandatory before samples enter the golden set |
-| 3 | Ragas evaluation pipeline (Faithfulness, Answer Relevancy, Context Precision, Context Recall) | Done ([eval/ragas_runner.py](eval/ragas_runner.py)) |
-| 4 | Custom metrics (Citation Coverage, Decline Accuracy, Latency Compliance) | Done ([eval/metrics/](eval/metrics/)) |
-| 5 | DeepEval pytest suite with pass/fail thresholds | Done ([tests/test_rag_evaluation.py](tests/test_rag_evaluation.py)) |
-| 6 | GitHub Actions CI quality gate | Done ([.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml)) — triggers on PRs touching pipeline/prompt/SQL/eval paths, plus weekly cron |
-| 7 | Evaluation storage schema (`eval_runs`, `eval_sample_results`) with RLS | Done ([sql/migrations/202604160003_phase3_eval_pipeline.sql](sql/migrations/202604160003_phase3_eval_pipeline.sql)) |
-| 8 | `/eval/run`, `/eval/runs`, `/eval/runs/{id}/samples` APIs | Done ([app/api/eval.py](app/api/eval.py)) |
-| 9 | CLI tools: `eval.run`, `eval.generate`, `eval.history`, `eval.compare` | Done ([eval/run.py](eval/run.py), [eval/generate.py](eval/generate.py), [eval/history.py](eval/history.py), [eval/compare.py](eval/compare.py)) |
-| 10 | Historical score tracking + run comparison | Done — `eval.history` and `eval.compare` CLIs over the persisted `eval_runs` / `eval_sample_results` tables |
-| 11 | Threshold configuration decoupled from code | Done ([eval/config/thresholds.yaml](eval/config/thresholds.yaml), [eval/thresholds.py](eval/thresholds.py)) |
-| 12 | Phase 3 test coverage | Done ([tests/test_eval_runner.py](tests/test_eval_runner.py), [tests/test_eval_api.py](tests/test_eval_api.py), [tests/test_custom_metrics.py](tests/test_custom_metrics.py), [tests/test_rag_evaluation.py](tests/test_rag_evaluation.py)) |
+| 1 | Golden dataset (v1.0.0) with versioned JSON + CHANGELOG | Done — seed of 14 samples; expanding toward the ≥50-sample target |
+| 2 | Synthetic test generation pipeline | Done ([backend/eval/generate.py](backend/eval/generate.py)) |
+| 3 | Ragas evaluation pipeline | Done ([backend/eval/ragas_runner.py](backend/eval/ragas_runner.py)) |
+| 4 | Custom metrics (Citation Coverage, Decline Accuracy, Latency Compliance) | Done ([backend/eval/metrics/](backend/eval/metrics/)) |
+| 5 | DeepEval pytest suite with pass/fail thresholds | Done ([backend/tests/test_rag_evaluation.py](backend/tests/test_rag_evaluation.py)) |
+| 6 | GitHub Actions CI quality gate | Done ([.github/workflows/rag-evaluation.yml](.github/workflows/rag-evaluation.yml)) |
+| 7 | Evaluation storage schema with RLS | Done ([backend/sql/migrations/202604160003_phase3_eval_pipeline.sql](backend/sql/migrations/202604160003_phase3_eval_pipeline.sql)) |
+| 8 | `/eval/run`, `/eval/runs`, `/eval/runs/{id}/samples` APIs | Done ([backend/app/api/eval.py](backend/app/api/eval.py)) |
+| 9 | CLI tools: `eval.run`, `eval.generate`, `eval.history`, `eval.compare` | Done |
+| 10 | Historical score tracking + run comparison | Done |
+| 11 | Threshold configuration decoupled from code | Done ([backend/eval/config/thresholds.yaml](backend/eval/config/thresholds.yaml)) |
+| 12 | Phase 3 test coverage | Done |
 
 ## Phase 4 Deliverables — Status
 
@@ -905,11 +1154,17 @@ hallucination defense on top of the relevance-threshold short-circuit.
 |---|-------------|--------|
 | 1 | Hosted `/v1` API with API-key auth | Done |
 | 2 | JWT dashboard platform endpoints for integrations and API keys | Done |
-| 3 | Knowledge-base abstraction and KB-scoped retrieval | Done |
-| 4 | Request/audit logging tables and API exposure | Done |
-| 5 | Connector source + sync job schema and APIs | Done (record/sync-job layer) |
-| 6 | Python server SDK | Done |
-| 7 | Secure API key hashing + encrypted connector config | Done |
-| 8 | Full dashboard UI | Not yet implemented |
-| 9 | Durable connector execution workers | Not yet implemented |
-| 10 | Browser/widget delivery + PDF overlay UX | Not yet implemented |
+| 3 | Default global integration auto-provisioned on tenant signup | Done |
+| 4 | Integration-scoped document upload/list endpoints (`/v1/integrations/{id}/documents`) | Done |
+| 5 | Integration-scoped query + stream endpoints (`/v1/integrations/{id}/query[/stream]`) | Done |
+| 6 | Flat API-key query endpoints (`/v1/query/integration[/stream]`) | Done |
+| 7 | Integration fallback resolution in `/ingest`, `/query`, `/query/stream` | Done |
+| 8 | Request/audit logging tables and API exposure | Done |
+| 9 | Connector source + sync job schema and APIs (deprecated, record layer only) | Done |
+| 10 | Python server SDK | Done |
+| 11 | Secure API key hashing + encrypted connector config | Done |
+| 12 | Repository split into `backend/` + `frontend/` workspaces | Done |
+| 13 | Multi-service `docker-compose.yml` with frontend stub | Done |
+| 14 | Full dashboard UI | Not yet implemented |
+| 15 | Durable connector execution workers | Not yet implemented |
+| 16 | Browser/widget delivery + PDF overlay UX | Not yet implemented |
