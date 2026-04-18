@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Ban } from 'lucide-react';
+import { Ban, Code2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   type ApiKey,
@@ -12,6 +12,7 @@ import {
 } from '@/lib/api/api-keys';
 import type { Integration } from '@/lib/api/integrations';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import { CodeExampleDialog } from './CodeExampleDialog';
 import { formatDate, cn } from '@/lib/utils';
 
 interface ApiKeyTableProps {
@@ -37,6 +38,8 @@ export function ApiKeyTable({ apiKeys, integrations }: ApiKeyTableProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [targetKey, setTargetKey] = useState<ApiKey | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [codeKey, setCodeKey] = useState<ApiKey | null>(null);
 
   const integrationNameById = new Map(
     integrations.map((i) => [i.id, i.name])
@@ -159,16 +162,28 @@ export function ApiKeyTable({ apiKeys, integrations }: ApiKeyTableProps) {
                     {key.expires_at ? formatDate(key.expires_at) : 'Never'}
                   </td>
                   <td className="px-4 py-4 text-right">
-                    {!isRevoked && (
+                    <div className="inline-flex items-center gap-1 justify-end">
                       <button
-                        onClick={() => handleRevokeClick(key)}
-                        disabled={revokingId === key.id}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors duration-150 disabled:opacity-50"
+                        onClick={() => {
+                          setCodeKey(key);
+                          setCodeOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-[#3B82F6] hover:bg-blue-50 transition-colors duration-150"
                       >
-                        <Ban className="h-3.5 w-3.5" />
-                        Revoke
+                        <Code2 className="h-3.5 w-3.5" />
+                        View code
                       </button>
-                    )}
+                      {!isRevoked && (
+                        <button
+                          onClick={() => handleRevokeClick(key)}
+                          disabled={revokingId === key.id}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors duration-150 disabled:opacity-50"
+                        >
+                          <Ban className="h-3.5 w-3.5" />
+                          Revoke
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -186,6 +201,22 @@ export function ApiKeyTable({ apiKeys, integrations }: ApiKeyTableProps) {
         confirmLabel="Revoke"
         isDestructive
       />
+
+      {codeKey && (
+        <CodeExampleDialog
+          open={codeOpen}
+          onOpenChange={(open) => {
+            setCodeOpen(open);
+            if (!open) setCodeKey(null);
+          }}
+          integrationId={codeKey.integration_id}
+          integrationName={
+            integrationNameById.get(codeKey.integration_id) ?? 'integration'
+          }
+          keyName={codeKey.name}
+          keyPrefix={codeKey.prefix}
+        />
+      )}
     </>
   );
 }
