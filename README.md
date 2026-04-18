@@ -1,16 +1,19 @@
 # RAGfier — Hosted RAG API, Platform, and Evaluation Pipeline
 
 Multi-tenant Retrieval-Augmented Generation backbone. Phase 1 ingests
-PDFs/Markdown into Supabase `pgvector` with full citation metadata and
-Row-Level Security. Phase 2 turns that index into a production-quality
-query pipeline: hybrid retrieval (dense + sparse + RRF), cross-encoder
-reranking, and citation-enforced LLM generation with hallucination
-guardrails and SSE streaming. Phase 3 adds an automated evaluation
-pipeline: versioned golden datasets, Ragas-based scoring, custom RAG
-quality metrics, persisted evaluation history, `/eval` APIs, and a
-GitHub Actions quality gate. Phase 4 adds the first hosted-platform
-slice: API-key-based `/v1` APIs, knowledge bases, integrations, managed
-connector records, audit/request logging, and a server SDK.
+PDFs/Markdown into Supabase `pgvector` with full citation metadata,
+section-aware chunking, optional Anthropic-style per-chunk
+contextualization with prompt caching, and Row-Level Security. Phase 2
+turns that index into a production-quality query pipeline: hybrid
+retrieval (dense + sparse + weighted RRF, OpenAI File-Search-style),
+cross-encoder reranking, and citation-enforced LLM generation with
+hallucination guardrails, grounded inference, and SSE streaming.
+Phase 3 adds an automated evaluation pipeline: versioned golden
+datasets, Ragas-based scoring, custom RAG quality metrics, persisted
+evaluation history, `/eval` APIs, and a GitHub Actions quality gate.
+Phase 4 adds the first hosted-platform slice: API-key-based `/v1`
+APIs, knowledge bases, integrations, managed connector records,
+audit/request logging, and a server SDK.
 
 See [SPEC.md](SPEC.md) (Phase 3) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
 full technical specs, and [AGENTS.md](AGENTS.md) for coding conventions.
@@ -51,24 +54,25 @@ This keeps deploy-time secrets out of source control while making safe defaults 
 ### Ingestion (Phase 1)
 
 ```
-Upload → Supabase Storage → LlamaParse → Chunker → OpenAI Embeddings → pgvector
+Upload → Supabase Storage → LlamaParse → Chunker → Contextualizer (opt-in) → OpenAI Embeddings → pgvector
 ```
 
 - **Parser** — [backend/app/pipeline/parser.py](backend/app/pipeline/parser.py): LlamaParse for PDFs, in-process Markdown parser. Tracks section headings and spatial metadata.
-- **Chunker** — [backend/app/pipeline/chunker.py](backend/app/pipeline/chunker.py): `RecursiveCharacterTextSplitter`, 700-token target / 100 overlap, tiktoken `cl100k_base`. Prepends document title + section heading to every chunk.
+- **Chunker** — [backend/app/pipeline/chunker.py](backend/app/pipeline/chunker.py): `RecursiveCharacterTextSplitter`, 700-token target / 100 overlap, tiktoken `cl100k_base`. Section-aware: consecutive non-heading blocks sharing a `section_heading` and `page_number` are merged before splitting, so short enumerations (resume "Projects" / "Experience", contract paragraphs under one heading) stay in a single chunk — which is what lets superlative and cross-entry comparison queries succeed. Prepends document title + section heading to every chunk for situated context.
+- **Contextualizer** — [backend/app/pipeline/contextualizer.py](backend/app/pipeline/contextualizer.py): Anthropic-style Contextual Retrieval ([Anthropic 2024](https://www.anthropic.com/news/contextual-retrieval)). When enabled, Claude Haiku (`claude-haiku-4-5-20251001` by default) generates a 50-100 token situated context per chunk using Anthropic prompt caching (`cache_control: ephemeral` on the `<document>` block), cutting input-token cost by ~90% on long documents. The summary is prepended as `[Context: ...]` ahead of the original chunk. Opt-in via `CONTEXTUALIZATION_ENABLED=true` + `ANTHROPIC_API_KEY`; disabled by default with graceful fall-back to the original chunk on any Anthropic error so the ingest pipeline never hard-fails on contextualization.
 - **Embedder** — [backend/app/pipeline/embedder.py](backend/app/pipeline/embedder.py): OpenAI `text-embedding-3-small` (1536d), batch size 100, exponential backoff (max 3 retries).
 - **Upserter** — [backend/app/pipeline/upserter.py](backend/app/pipeline/upserter.py): Batch insert into `documents` with full metadata JSONB; updates `ingestion_jobs.status` at every step.
-- **Orchestrator** — [backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py): Coordinates the full parse → chunk → embed → upsert flow under a single `job_id`.
+- **Orchestrator** — [backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py): Coordinates the full parse → chunk → contextualize → embed → upsert flow under a single `job_id`, with a distinct `contextualizing` job-status step when the contextualizer is enabled.
 
 ### Query pipeline (Phase 2)
 
 ```
-Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ RRF) → Rerank → Guardrail → Prompt → LLM → Citations
+Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ Weighted RRF) → Rerank → Guardrail → Prompt → LLM → Citations
 ```
 
 - **Dense retrieval** — [backend/app/pipeline/retriever_dense.py](backend/app/pipeline/retriever_dense.py): cosine similarity via `match_documents` (HNSW + `vector_cosine_ops`).
-- **Sparse retrieval** — [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py): BM25-equivalent via Postgres `tsvector` + `websearch_to_tsquery` on a generated `fts` column. The `HybridRetriever` runs both branches + RRF inside the `match_documents_hybrid` SQL function.
-- **Reciprocal Rank Fusion** — [backend/app/pipeline/fusion.py](backend/app/pipeline/fusion.py): pure-Python RRF (`1 / (k + rank)`, `k=60`) used by the in-process fallback path and tests.
+- **Sparse retrieval** — [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py): BM25-equivalent via Postgres `tsvector` + `websearch_to_tsquery` on a generated `fts` column. The `HybridRetriever` runs both branches + RRF inside the `match_documents_hybrid` SQL function, and auto-falls-back to an unweighted call on older databases that don't yet have the weighted RPC.
+- **Reciprocal Rank Fusion (OpenAI-style weighted)** — [backend/app/pipeline/fusion.py](backend/app/pipeline/fusion.py) and [backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql](backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql): weighted RRF implementing the OpenAI "File Search" style formula `(semantic_weight / (k + dense_rank)) + (full_text_weight / (k + sparse_rank))`. Defaults of `SEMANTIC_WEIGHT=0.7` / `FULL_TEXT_WEIGHT=0.3` bias semantic search; tune toward lexical for keyword-heavy corpora (code, SKUs, identifiers). Passing `1.0 / 1.0` reproduces the classic unweighted RRF used by the fallback path.
 - **Reranker** — [backend/app/pipeline/reranker.py](backend/app/pipeline/reranker.py): Cohere `rerank-english-v3.0` primary + local `cross-encoder/ms-marco-MiniLM-L-6-v2` fallback behind a single `Reranker` facade. Auto-falls-back on API failure and reports the provider actually used.
 - **Hallucination guardrail** — [backend/app/pipeline/reranker.py](backend/app/pipeline/reranker.py): declines with the canonical "not enough information" message when the top rerank score is below `RELEVANCE_THRESHOLD`, or when retrieval is empty.
 - **Generator** — [backend/app/pipeline/generator.py](backend/app/pipeline/generator.py): OpenAI `gpt-4o` (configurable) with retry-wrapped `generate()` and async `stream()`; model/temperature/max_tokens are pulled from the prompt config.
@@ -392,7 +396,7 @@ job and every resulting document chunk.
 {
   "query": "What is the liability cap?",
   "integration_id": "uuid-or-omitted",
-  "match_count": 5,
+  "match_count": 8,
   "rerank": true,
   "include_sources": true,
   "prompt_name": "rag_generation_v1",
@@ -470,6 +474,18 @@ The `sources` event lets a frontend render citation cards while tokens stream
 in. Declines emit a single synthetic `token` event followed by `done` with
 `declined: true`.
 
+All heavy work (integration resolution, embedding, retrieval, rerank, prompt
+assembly) happens inside the SSE generator, so failures surface as an `error`
+event followed by a terminal `done`, rather than a pre-stream HTTP 500:
+
+```
+event: error
+data: {"message": "Query pipeline failed", "detail": "<exception text>"}
+
+event: done
+data: {"message": "Query stream generation failed", "declined": false}
+```
+
 #### Error response shape
 
 ```json
@@ -485,8 +501,8 @@ validation error, `500` internal error.
 
 Representative error message keys: `auth.missing_bearer_token`,
 `auth.missing_organization_id`, `platform_auth.invalid_api_key`,
-`platform_auth.insufficient_scope`, `integration.integration_not_found`,
-`document.document_not_found`, `ingest.file_too_large`, `query.pipeline_failed`.
+`platform_auth.insufficient_scope`, `platform.integration_not_found`,
+`platform.document_not_found`, `ingest.file_too_large`, `query.pipeline_failed`.
 
 ### `/eval` API workflow
 
@@ -519,13 +535,14 @@ RAGfier/
 │   │   │   └── health.py            GET /health
 │   │   ├── pipeline/
 │   │   │   ├── parser.py            LlamaParse + MD
-│   │   │   ├── chunker.py           recursive character splitter
+│   │   │   ├── chunker.py           section-aware recursive character splitter
+│   │   │   ├── contextualizer.py    Anthropic contextual retrieval (prompt-cached, opt-in)
 │   │   │   ├── embedder.py          OpenAI batch embeddings
 │   │   │   ├── upserter.py          Supabase batch upsert
 │   │   │   ├── orchestrator.py      ingestion orchestrator
 │   │   │   ├── retriever_dense.py   pgvector cosine (integration-scoped)
-│   │   │   ├── retriever_sparse.py  tsvector BM25 + HybridRetriever (integration-scoped)
-│   │   │   ├── fusion.py            Reciprocal Rank Fusion
+│   │   │   ├── retriever_sparse.py  tsvector BM25 + HybridRetriever (integration-scoped, weighted RRF)
+│   │   │   ├── fusion.py            Reciprocal Rank Fusion (weighted + unweighted)
 │   │   │   ├── reranker.py          Cohere + local cross-encoder
 │   │   │   ├── generator.py         gpt-4o generation + streaming
 │   │   │   ├── citation_resolver.py [SOURCE_N] assembly + resolution
@@ -571,7 +588,7 @@ RAGfier/
 │   │   ├── reset-environment.sh     purge bucket then truncate DB
 │   │   ├── truncate-all-tables.sh   destructive DB reset helper
 │   │   └── purge-supabase-bucket.py backward-compatible wrapper for package CLI
-│   ├── tests/                       69 tests — all unit and integration coverage
+│   ├── tests/                       76 tests — all unit and integration coverage
 │   ├── Dockerfile                   backend container image
 │   ├── requirements.txt
 │   ├── pyproject.toml
@@ -599,6 +616,11 @@ cp .env.example .env
 # Phase 2:  COHERE_API_KEY (or set RERANKER_PROVIDER=local)
 #           GENERATION_MODEL, GENERATION_TEMPERATURE, GENERATION_MAX_TOKENS
 #           DENSE_TOP_N, SPARSE_TOP_N, RRF_K, RERANK_TOP_K, RELEVANCE_THRESHOLD
+#           SEMANTIC_WEIGHT, FULL_TEXT_WEIGHT   (OpenAI-style weighted RRF)
+# Phase 2+: ANTHROPIC_API_KEY, CONTEXTUALIZATION_ENABLED,
+#           CONTEXTUALIZER_MODEL, CONTEXTUALIZER_MAX_TOKENS,
+#           CONTEXTUALIZER_MAX_CONCURRENCY, CONTEXTUALIZER_MAX_DOC_CHARS
+#           (opt-in Anthropic contextual retrieval with prompt caching)
 # Phase 3:  EVAL_DATASET_PATH, EVAL_THRESHOLDS_PATH, EVAL_LLM_JUDGE,
 #           EVAL_FAITHFULNESS_LLM, EVAL_MAX_CONCURRENCY,
 #           EVAL_LATENCY_BUDGET_MS, EVAL_REPORTS_DIR
@@ -821,7 +843,7 @@ Before using any of these scripts:
 - Confirm `backend/.env` points at the intended environment
 - Treat these commands as destructive and non-routine
 
-### Truncate all application tables
+### Truncate all application tables and delete all users
 
 SQL source:
 
@@ -838,10 +860,10 @@ chmod +x scripts/truncate-all-tables.sh
 Behavior:
 
 - Loads `backend/.env`
-- Requires `SUPABASE_DB_URL`
-- Executes the SQL file with `psql`
-- Falls back to a disposable `postgres:16-alpine` container if `psql` is not installed
-- Truncates `eval_sample_results`, `eval_runs`, `prompt_versions`, `documents`, `ingestion_jobs`, and `tenants`
+- Requires `SUPABASE_DB_URL`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`
+- Requires `curl` and `jq` on `PATH` for the user-deletion step
+- Step 1 — executes the SQL file with `psql`, falling back to a disposable `postgres:16-alpine` container if `psql` is not installed; truncates `eval_sample_results`, `eval_runs`, `prompt_versions`, `documents`, `ingestion_jobs`, and `tenants`
+- Step 2 — paginates `GET /auth/v1/admin/users` and issues `DELETE /auth/v1/admin/users/{id}` for every Supabase Auth user until none remain; aborts on the first non-2xx response
 
 ### Empty the Supabase Storage bucket
 
@@ -915,11 +937,14 @@ reranker — no network, no real API keys, no Cohere/`sentence-transformers`
 install required for the unit suite. The DeepEval suite is separate and
 intended for Phase 3 quality gating. See [backend/tests/fakes.py](backend/tests/fakes.py).
 
-Suite: **69 tests** — parser, chunker, embedder, ingestion pipeline, API,
-RRF fusion, reranker fallback, generator (sync + streaming), citation
-resolver, prompt loader precedence, evaluation runner/API/custom metrics,
-hosted platform auth, `/v1` knowledge bases/documents/connectors/query,
-SDK coverage, and end-to-end `/query`, `/query/stream`, and `/prompts`
+Suite: **76 tests** — parser, chunker (including section-aware grouping
+and cross-section isolation), contextualizer (disabled-by-default no-op,
+prompt-cached Claude Haiku call, API-error fallback), embedder,
+ingestion pipeline, API, RRF fusion (classic + OpenAI-style weighted),
+reranker fallback, generator (sync + streaming), citation resolver,
+prompt loader precedence, evaluation runner/API/custom metrics, hosted
+platform auth, `/v1` knowledge bases/documents/connectors/query, SDK
+coverage, and end-to-end `/query`, `/query/stream`, and `/prompts`
 round-trip.
 
 ## Phase 3 Evaluation Workflow
@@ -1001,12 +1026,16 @@ Every chunk in `documents.metadata` contains the full citation payload:
   "parser": "llamaparse",
   "chunk_strategy": "recursive_character",
   "chunk_size_tokens": 700,
-  "overlap_tokens": 100
+  "overlap_tokens": 100,
+  "contextualized": true
 }
 ```
 
 Missing values are stored as `null` — never dropped. The resolver preserves
-all of this on every `Citation` returned from `/query`.
+all of this on every `Citation` returned from `/query`. The optional
+`contextualized` flag is set to `true` when the Anthropic contextualizer
+ran against the chunk; `ChunkMetadata` keeps `extra="allow"` so the flag
+round-trips without a schema migration.
 
 ## Multi-Tenancy
 
@@ -1098,10 +1127,26 @@ max_tokens: ${generation_max_tokens}
 Those values are resolved through the same settings chain above, so prompt
 files can stay declarative without duplicating non-sensitive defaults.
 
-The system prompt hard-constrains the LLM to the provided context, requires
-`[SOURCE_N]` anchors on every factual claim, and mandates an exact decline
-message when the context is insufficient — this is the second layer of
-hallucination defence on top of the relevance-threshold short-circuit.
+The default prompt ([backend/prompts/rag_generation_v1.yaml](backend/prompts/rag_generation_v1.yaml))
+hard-constrains the LLM to the provided context and requires `[SOURCE_N]`
+anchors on every factual claim, but also enables **grounded reasoning** so
+the model can answer realistic questions that require light inference
+over the cited evidence:
+
+- **Temporal reasoning** — treat an entry with "Jan 2024 – Present" as
+  the current role/company when a user asks "where does X work now?"
+- **Ranking / superlatives** — compare enumerated items in the retrieved
+  chunks (e.g. "best project") and justify the choice from explicit
+  attributes in the evidence.
+- **Aggregation** — count or compare items that are all present in
+  context (e.g. "how many projects has X shipped?").
+- **Synonym resolution** — align query phrasing with context phrasing
+  ("current employer" ≈ "present role").
+
+When the retrieved context genuinely does not support an answer — even
+with the above reasoning — the prompt mandates the canonical decline
+message. This is the second layer of hallucination defence on top of the
+relevance-threshold short-circuit in the retrieval pipeline.
 
 ## Phase 1 Deliverables — Status
 
@@ -1130,6 +1175,20 @@ hallucination defence on top of the relevance-threshold short-circuit.
 | 8 | Prompt management (`/prompts` + YAML fallback) | Done |
 | 9 | Per-step latency tracking in response metadata | Done |
 | 10 | Phase 2 test suite | Done |
+
+## Retrieval Quality Enhancements — Status
+
+Targeted upgrades that close the gap on realistic user questions (superlatives, "current" queries, enumeration). Delivered alongside Phase 2.
+
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | Section-aware chunk grouping (keeps short enumerated sections in one chunk) | Done ([backend/app/pipeline/chunker.py](backend/app/pipeline/chunker.py), [backend/tests/test_chunker.py](backend/tests/test_chunker.py)) |
+| 2 | OpenAI File-Search-style weighted RRF in SQL + Python client with backward-compat fallback | Done ([backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql](backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql), [backend/app/pipeline/fusion.py](backend/app/pipeline/fusion.py), [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py)) |
+| 3 | Anthropic contextual retrieval with prompt caching (`cache_control: ephemeral`) | Done ([backend/app/pipeline/contextualizer.py](backend/app/pipeline/contextualizer.py), [backend/tests/test_contextualizer.py](backend/tests/test_contextualizer.py)) |
+| 4 | Contextualizer wiring in ingestion orchestrator with `contextualizing` job status | Done ([backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py)) |
+| 5 | Softened generation prompt allowing grounded reasoning (temporal / ranking / aggregation / synonym) | Done ([backend/prompts/rag_generation_v1.yaml](backend/prompts/rag_generation_v1.yaml)) |
+| 6 | Retrieval depth tuning: `rerank_top_k` default 5 → 8, API `match_count` default 5 → 8 | Done ([backend/app/config.py](backend/app/config.py), [backend/app/models/schemas.py](backend/app/models/schemas.py)) |
+| 7 | Graceful fallback to unweighted RRF when the weighted RPC is not yet migrated | Done ([backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py)) |
 
 ## Phase 3 Deliverables — Status
 
