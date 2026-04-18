@@ -22,11 +22,17 @@ const environmentBadgeVariant: Record<
 
 export function IntegrationCard({ integration }: IntegrationCardProps) {
   return (
-    <div className="bg-white rounded-lg p-6 hover:scale-[1.02] transition-all duration-200 flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-2">
+    <div className="relative bg-white rounded-lg p-6 hover:scale-[1.02] transition-all duration-200 flex flex-col gap-4 group">
+      <Link
+        href={`/integrations/${integration.id}`}
+        aria-label={`Open ${integration.name}`}
+        className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6] focus-visible:ring-offset-2"
+      />
+
+      <div className="relative flex items-start justify-between gap-2 pointer-events-none">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-xl font-bold text-[#111827] truncate">
+            <h3 className="text-xl font-bold text-[#111827] truncate group-hover:text-[#3B82F6] transition-colors duration-150">
               {integration.name}
             </h3>
             {integration.is_default && (
@@ -41,7 +47,7 @@ export function IntegrationCard({ integration }: IntegrationCardProps) {
         </Badge>
       </div>
 
-      <div>
+      <div className="relative pointer-events-none">
         <p className="text-sm text-gray-500">
           Created {formatDate(integration.created_at)}
         </p>
@@ -52,7 +58,7 @@ export function IntegrationCard({ integration }: IntegrationCardProps) {
         )}
       </div>
 
-      <div className="flex items-center gap-3 mt-auto pt-2 border-t border-[#E5E7EB]">
+      <div className="relative z-10 flex items-center gap-3 mt-auto pt-3 border-t border-[#E5E7EB]">
         <Link
           href={`/integrations/${integration.id}/documents`}
           className="flex-1"

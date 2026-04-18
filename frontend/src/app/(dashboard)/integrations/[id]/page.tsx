@@ -138,8 +138,11 @@ export default function IntegrationDetailPage({
         {/* Actions Card */}
         <div className="bg-white rounded-lg p-8">
           <h2 className="text-lg font-bold text-[#111827] mb-6">Actions</h2>
-          <div className="space-y-3">
-            <Link href={`/integrations/${integration.id}/documents`}>
+          <div className="flex flex-col gap-4">
+            <Link
+              href={`/integrations/${integration.id}/documents`}
+              className="block"
+            >
               <Button
                 variant="primary"
                 className="w-full flex items-center gap-2 h-12"
@@ -148,7 +151,10 @@ export default function IntegrationDetailPage({
                 View Documents
               </Button>
             </Link>
-            <Link href={`/integrations/${integration.id}/playground`}>
+            <Link
+              href={`/integrations/${integration.id}/playground`}
+              className="block"
+            >
               <Button
                 variant="outline"
                 className="w-full flex items-center gap-2 h-12"

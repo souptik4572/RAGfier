@@ -1,5 +1,5 @@
 name: rag_generation_v1
-version: 2
+version: 1
 model: ${generation_model}
 temperature: ${generation_temperature}
 max_tokens: ${generation_max_tokens}
