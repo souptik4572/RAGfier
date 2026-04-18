@@ -12,14 +12,6 @@ function extractMessageFromBody(body: unknown): string | undefined {
 
   const record = body as Record<string, unknown>;
 
-  if (typeof record.message === 'string' && record.message.trim()) {
-    return record.message;
-  }
-
-  if (typeof record.error === 'string' && record.error.trim()) {
-    return record.error;
-  }
-
   const detail = record.detail;
   if (typeof detail === 'string' && detail.trim()) {
     return detail;
@@ -46,6 +38,14 @@ function extractMessageFromBody(body: unknown): string | undefined {
     if (nested) {
       return nested;
     }
+  }
+
+  if (typeof record.message === 'string' && record.message.trim()) {
+    return record.message;
+  }
+
+  if (typeof record.error === 'string' && record.error.trim()) {
+    return record.error;
   }
 
   return undefined;

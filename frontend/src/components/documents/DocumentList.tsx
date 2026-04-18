@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import { type Document, deleteDocument } from '@/lib/api/documents';
 import { JobStatusBadge } from './JobStatusBadge';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
-import { formatDate, truncate } from '@/lib/utils';
+import { formatDate, getErrorMessage, truncate } from '@/lib/utils';
 
 interface DocumentListProps {
   documents: Document[];
@@ -33,8 +33,7 @@ export function DocumentList({ documents, integrationId }: DocumentListProps) {
       await queryClient.invalidateQueries({ queryKey: ['documents', integrationId] });
       toast.success('Document deleted');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Delete failed';
-      toast.error(message);
+      toast.error(getErrorMessage(err, 'Delete failed'));
     } finally {
       setDeletingId(null);
       setTargetDoc(null);

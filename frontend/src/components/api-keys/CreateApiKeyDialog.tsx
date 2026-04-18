@@ -27,7 +27,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
-import { cn } from '@/lib/utils';
+import { cn, getErrorMessage } from '@/lib/utils';
 
 type FormInput = z.input<typeof createApiKeySchema>;
 type FormOutput = z.output<typeof createApiKeySchema>;
@@ -93,8 +93,7 @@ export function CreateApiKeyDialog({
       onOpenChange(false);
       onCreated(created);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to create API key';
-      toast.error(message);
+      toast.error(getErrorMessage(err, 'Failed to create API key'));
     }
   };
 

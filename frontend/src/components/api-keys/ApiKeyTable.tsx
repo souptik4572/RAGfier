@@ -13,7 +13,7 @@ import {
 import type { Integration } from '@/lib/api/integrations';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { CodeExampleDialog } from './CodeExampleDialog';
-import { formatDate, cn } from '@/lib/utils';
+import { formatDate, cn, getErrorMessage } from '@/lib/utils';
 
 interface ApiKeyTableProps {
   apiKeys: ApiKey[];
@@ -58,8 +58,7 @@ export function ApiKeyTable({ apiKeys, integrations }: ApiKeyTableProps) {
       await queryClient.invalidateQueries({ queryKey: ['api-keys'] });
       toast.success(`API key "${targetKey.name}" revoked`);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to revoke';
-      toast.error(message);
+      toast.error(getErrorMessage(err, 'Failed to revoke'));
     } finally {
       setRevokingId(null);
       setTargetKey(null);

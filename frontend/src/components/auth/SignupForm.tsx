@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { signupSchema, type SignupFormValues } from '@/lib/schemas/auth.schema';
 import { signup } from '@/lib/api/auth';
 import { useAuthStore } from '@/lib/store/authStore';
+import { getErrorMessage } from '@/lib/utils';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -36,8 +37,7 @@ export function SignupForm() {
       document.cookie = 'ragfier-token=1; path=/; SameSite=Lax';
       router.push('/dashboard');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Signup failed';
-      toast.error(message);
+      toast.error(getErrorMessage(err, 'Signup failed'));
     }
   };
 

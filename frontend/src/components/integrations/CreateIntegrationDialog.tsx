@@ -9,6 +9,7 @@ import {
   createIntegrationSchema,
 } from '@/lib/schemas/integration.schema';
 import { createIntegration } from '@/lib/api/integrations';
+import { getErrorMessage } from '@/lib/utils';
 
 // RHF works with raw input types (pre-transform); output goes to createIntegration
 type FormInput = z.input<typeof createIntegrationSchema>;
@@ -62,9 +63,7 @@ export function CreateIntegrationDialog({
       reset();
       onOpenChange(false);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to create integration';
-      toast.error(message);
+      toast.error(getErrorMessage(err, 'Failed to create integration'));
     }
   };
 

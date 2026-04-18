@@ -5,7 +5,7 @@ import { Upload, FileUp, FileText, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useJobPoller } from '@/lib/hooks/useJobPoller';
-import { cn } from '@/lib/utils';
+import { cn, getErrorMessage } from '@/lib/utils';
 
 interface UploadDropzoneProps {
   onUpload: (file: File, title?: string) => Promise<void>;
@@ -64,8 +64,7 @@ export function UploadDropzone({
         inputRef.current.value = '';
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Upload failed';
-      toast.error(message);
+      toast.error(getErrorMessage(err, 'Upload failed'));
     } finally {
       setIsSubmitting(false);
     }
