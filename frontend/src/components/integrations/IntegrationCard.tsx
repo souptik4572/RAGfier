@@ -45,9 +45,9 @@ export function IntegrationCard({ integration }: IntegrationCardProps) {
         <p className="text-sm text-gray-500">
           Created {formatDate(integration.created_at)}
         </p>
-        {integration.metadata && (
-          <p className="mt-1 text-sm text-gray-400 truncate">
-            {integration.metadata}
+        {integration.metadata && Object.keys(integration.metadata).length > 0 && (
+          <p className="mt-1 text-sm text-gray-400 truncate font-mono">
+            {JSON.stringify(integration.metadata)}
           </p>
         )}
       </div>

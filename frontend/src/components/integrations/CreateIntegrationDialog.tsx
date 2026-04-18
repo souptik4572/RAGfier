@@ -4,11 +4,15 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { z } from 'zod';
 import {
   createIntegrationSchema,
-  type CreateIntegrationFormValues,
 } from '@/lib/schemas/integration.schema';
 import { createIntegration } from '@/lib/api/integrations';
+
+// RHF works with raw input types (pre-transform); output goes to createIntegration
+type FormInput = z.input<typeof createIntegrationSchema>;
+type FormOutput = z.output<typeof createIntegrationSchema>;
 import {
   Dialog,
   DialogContent,
@@ -38,14 +42,15 @@ export function CreateIntegrationDialog({
     reset,
     setValue,
     formState: { errors, isSubmitting },
-  } = useForm<CreateIntegrationFormValues>({
+  } = useForm<FormInput, unknown, FormOutput>({
     resolver: zodResolver(createIntegrationSchema),
     defaultValues: {
       environment: 'development',
+      metadata: '',
     },
   });
 
-  const onSubmit = async (data: CreateIntegrationFormValues) => {
+  const onSubmit = async (data: FormOutput) => {
     try {
       await createIntegration(data);
       await queryClient.invalidateQueries({ queryKey: ['integrations'] });
