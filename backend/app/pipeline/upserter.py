@@ -29,6 +29,7 @@ class DocumentUpserter:
         *,
         tenant_id: str,
         job_id: str,
+        integration_id: Optional[str] = None,
         knowledge_base_id: Optional[str] = None,
         source_type: Optional[str] = None,
         source_id: Optional[str] = None,
@@ -51,6 +52,7 @@ class DocumentUpserter:
                 self._build_record(
                     tenant_id=tenant_id,
                     job_id=job_id,
+                    integration_id=integration_id,
                     knowledge_base_id=knowledge_base_id,
                     source_type=source_type,
                     source_id=source_id,
@@ -94,6 +96,7 @@ class DocumentUpserter:
         *,
         tenant_id: str,
         job_id: str,
+        integration_id: Optional[str],
         knowledge_base_id: Optional[str],
         source_type: Optional[str],
         source_id: Optional[str],
@@ -104,6 +107,7 @@ class DocumentUpserter:
         return {
             "tenant_id": tenant_id,
             "job_id": job_id,
+            "integration_id": integration_id,
             "knowledge_base_id": knowledge_base_id,
             "source_type": source_type,
             "source_id": source_id,

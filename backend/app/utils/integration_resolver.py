@@ -70,7 +70,7 @@ def resolve_integration(
             or []
         )
         if not rows:
-            raise_api_error(404, "integration.integration_not_found")
+            raise_api_error(404, "platform.integration_not_found")
         return rows[0]
 
     return get_or_create_default_integration(client, tenant_id)

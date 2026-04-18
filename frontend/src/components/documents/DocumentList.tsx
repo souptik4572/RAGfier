@@ -7,14 +7,6 @@ import { toast } from 'sonner';
 import { type Document, deleteDocument } from '@/lib/api/documents';
 import { JobStatusBadge } from './JobStatusBadge';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { formatDate, truncate } from '@/lib/utils';
 
 interface DocumentListProps {
@@ -53,36 +45,35 @@ export function DocumentList({ documents, integrationId }: DocumentListProps) {
   return (
     <>
       <div className="bg-white rounded-lg overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>File Name</TableHead>
-              <TableHead>Title</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Chunks</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {documents.map((doc) => (
-              <TableRow key={doc.id}>
-                <TableCell className="font-medium">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-[#111827] text-white">
+              <th className="text-left px-6 py-3 font-semibold tracking-tight">File Name</th>
+              <th className="text-left px-6 py-3 font-semibold tracking-tight">Title</th>
+              <th className="text-left px-6 py-3 font-semibold tracking-tight">Status</th>
+              <th className="text-left px-6 py-3 font-semibold tracking-tight">Chunks</th>
+              <th className="text-left px-6 py-3 font-semibold tracking-tight">Created</th>
+              <th className="text-right px-6 py-3 font-semibold tracking-tight">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {documents.map((doc, index) => (
+              <tr
+                key={doc.id}
+                className={index % 2 === 0 ? 'bg-white' : 'bg-[#F3F4F6]'}
+              >
+                <td className="px-6 py-4 font-medium text-[#111827]">
                   {truncate(doc.file_name, 40)}
-                </TableCell>
-                <TableCell className="text-gray-500">
-                  {doc.title ? truncate(doc.title, 30) : '—'}
-                </TableCell>
-                <TableCell>
+                </td>
+                <td className="px-6 py-4 text-gray-500">
+                  {doc.document_title ? truncate(doc.document_title, 30) : '—'}
+                </td>
+                <td className="px-6 py-4">
                   <JobStatusBadge status={doc.status} />
-                </TableCell>
-                <TableCell className="text-gray-500">
-                  {doc.chunk_count ?? '—'}
-                </TableCell>
-                <TableCell className="text-gray-500">
-                  {formatDate(doc.created_at)}
-                </TableCell>
-                <TableCell className="text-right">
+                </td>
+                <td className="px-6 py-4 text-gray-500">{doc.chunk_count ?? '—'}</td>
+                <td className="px-6 py-4 text-gray-500">{formatDate(doc.created_at)}</td>
+                <td className="px-6 py-4 text-right">
                   <button
                     onClick={() => handleDeleteClick(doc)}
                     disabled={deletingId === doc.id}
@@ -91,11 +82,11 @@ export function DocumentList({ documents, integrationId }: DocumentListProps) {
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
-                </TableCell>
-              </TableRow>
+                </td>
+              </tr>
             ))}
-          </TableBody>
-        </Table>
+          </tbody>
+        </table>
       </div>
 
       <ConfirmDialog

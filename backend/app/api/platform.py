@@ -93,6 +93,37 @@ async def list_integrations(
     )
 
 
+@router.get("/integrations/{integration_id}", response_model=IntegrationSummary)
+async def get_integration(
+    integration_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+) -> IntegrationSummary:
+    client = get_service_client()
+    rows = (
+        client.table("integrations")
+        .select("*")
+        .eq("tenant_id", auth.tenant_id)
+        .eq("id", str(integration_id))
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        raise_api_error(404, "platform.integration_not_found")
+    row = rows[0]
+    return build_response(
+        IntegrationSummary,
+        "platform.integration_fetched",
+        id=UUID(str(row["id"])),
+        tenant_id=UUID(str(row["tenant_id"])),
+        name=row["name"],
+        environment=row.get("environment") or "production",
+        metadata=row.get("metadata") or {},
+        created_at=row.get("created_at"),
+    )
+
+
 @router.post("/api-keys", response_model=ApiKeyCreateResponse, status_code=201)
 async def create_api_key(
     payload: ApiKeyCreateRequest,

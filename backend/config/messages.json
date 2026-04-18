@@ -70,6 +70,7 @@
   },
   "platform": {
     "integration_created": "Integration created successfully",
+    "integration_fetched": "Integration retrieved successfully",
     "integrations_listed": "Integrations retrieved successfully",
     "api_key_created": "API key created successfully",
     "api_keys_listed": "API keys retrieved successfully",

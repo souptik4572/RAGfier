@@ -340,7 +340,6 @@ class KnowledgeBaseListResponse(BaseModel):
 
 class QueryRequestV1(BaseModel):
     query: str = Field(..., min_length=1)
-    knowledge_base_ids: List[UUID] = Field(..., min_length=1)
     match_count: int = Field(default=5, ge=1, le=50)
     rerank: bool = Field(default=True)
     include_sources: bool = Field(default=True)

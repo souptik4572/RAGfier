@@ -2,6 +2,7 @@
 
 import { use, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { FileText } from 'lucide-react';
 import { getIntegration } from '@/lib/api/integrations';
 import { listDocuments, uploadDocument } from '@/lib/api/documents';
 import { PageHeader } from '@/components/layout/PageHeader';
@@ -9,7 +10,6 @@ import { DocumentList } from '@/components/documents/DocumentList';
 import { UploadDropzone } from '@/components/documents/UploadDropzone';
 import { LoadingBlock } from '@/components/shared/LoadingBlock';
 import { EmptyState } from '@/components/shared/EmptyState';
-import { FileText } from 'lucide-react';
 
 interface DocumentsPageProps {
   params: Promise<{ id: string }>;
@@ -31,9 +31,9 @@ export default function DocumentsPage({ params }: DocumentsPageProps) {
   });
 
   const handleUpload = async (file: File, title?: string) => {
-    const doc = await uploadDocument(id, file, title);
-    if (doc.job_id) {
-      setPendingJobId(doc.job_id);
+    const response = await uploadDocument(id, file, title);
+    if (response.job_id) {
+      setPendingJobId(response.job_id);
     }
     await queryClient.invalidateQueries({ queryKey: ['documents', id] });
   };

@@ -23,6 +23,11 @@ export function UploadDropzone({
 
   const { data: jobStatus } = useJobPoller(pendingJobId, integrationId);
 
+  const isProcessing =
+    !!pendingJobId &&
+    !!jobStatus?.status &&
+    !['completed', 'failed'].includes(jobStatus.status);
+
   const handleFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return;
@@ -38,7 +43,7 @@ export function UploadDropzone({
       setIsUploading(true);
       try {
         await onUpload(file);
-        toast.success(`${file.name} uploaded successfully`);
+        toast.success(`${file.name} uploaded — processing started`);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Upload failed';
         toast.error(message);
@@ -65,12 +70,22 @@ export function UploadDropzone({
     handleFiles(e.dataTransfer.files);
   };
 
-  const onClick = () => inputRef.current?.click();
+  const onClick = () => {
+    if (!isUploading && !isProcessing) {
+      inputRef.current?.click();
+    }
+  };
 
-  const isProcessing =
-    pendingJobId &&
-    jobStatus?.status &&
-    !['completed', 'failed'].includes(jobStatus.status);
+  const statusLabel = isUploading
+    ? 'Uploading…'
+    : isProcessing
+    ? `Processing: ${jobStatus?.status}…`
+    : 'Drop files here or click to upload';
+
+  const progressPercent =
+    isProcessing && jobStatus?.total_chunks && jobStatus.total_chunks > 0
+      ? Math.round((jobStatus.processed_chunks / jobStatus.total_chunks) * 100)
+      : null;
 
   return (
     <div
@@ -79,11 +94,11 @@ export function UploadDropzone({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
       className={cn(
-        'border-4 border-dashed rounded-lg p-12 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-200',
-        isDragging
-          ? 'border-[#3B82F6] bg-blue-50'
-          : 'border-[#3B82F6] bg-white hover:bg-[#F3F4F6]',
-        (isUploading || isProcessing) && 'opacity-70 cursor-not-allowed'
+        'border-4 border-dashed border-[#3B82F6] rounded-lg p-12 flex flex-col items-center justify-center text-center transition-all duration-200',
+        isDragging ? 'bg-blue-50' : 'bg-white',
+        isUploading || isProcessing
+          ? 'opacity-70 cursor-not-allowed'
+          : 'cursor-pointer hover:bg-[#F3F4F6]'
       )}
     >
       <input
@@ -92,7 +107,7 @@ export function UploadDropzone({
         accept=".pdf,.md,.markdown"
         className="hidden"
         onChange={(e) => handleFiles(e.target.files)}
-        disabled={isUploading || !!isProcessing}
+        disabled={isUploading || isProcessing}
       />
 
       <div className="w-16 h-16 rounded-full bg-[#F3F4F6] flex items-center justify-center mb-4">
@@ -103,16 +118,30 @@ export function UploadDropzone({
         )}
       </div>
 
-      <p className="text-lg font-bold text-[#111827]">
-        {isUploading
-          ? 'Uploading…'
-          : isProcessing
-          ? `Processing: ${jobStatus?.status}…`
-          : 'Drop files here or click to upload'}
-      </p>
-      <p className="mt-1 text-sm text-gray-500">
-        Supports PDF and Markdown files
-      </p>
+      <p className="text-lg font-bold text-[#111827]">{statusLabel}</p>
+      <p className="mt-1 text-sm text-gray-500">Supports PDF and Markdown files</p>
+
+      {isProcessing && progressPercent !== null && (
+        <div className="mt-4 w-48">
+          <div className="bg-[#F3F4F6] h-1.5 rounded-full overflow-hidden">
+            <div
+              className="bg-[#3B82F6] h-full rounded-full transition-all duration-300"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+          <p className="text-xs text-gray-400 mt-1">{progressPercent}% chunks processed</p>
+        </div>
+      )}
+
+      {pendingJobId && jobStatus?.status === 'failed' && (
+        <p className="mt-3 text-sm text-red-500 font-semibold">
+          Processing failed{jobStatus.error_message ? `: ${jobStatus.error_message}` : ''}
+        </p>
+      )}
+
+      {pendingJobId && jobStatus?.status === 'completed' && (
+        <p className="mt-3 text-sm text-[#10B981] font-semibold">Processing complete</p>
+      )}
     </div>
   );
 }

@@ -126,6 +126,7 @@ async def ingest_document(
         run_pipeline_task,
         job_id=job_id,
         tenant_id=auth.tenant_id,
+        integration_id=resolved_integration_id,
         file_path=str(tmp_file),
         file_name=file.filename,
         file_type=file_type,

@@ -7,7 +7,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable, Optional
+from typing import Any, AsyncIterator, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
@@ -155,6 +155,7 @@ async def upload_document_v1(
         {
             "id": job_id,
             "tenant_id": auth.tenant_id,
+            "integration_id": auth.integration_id,
             "knowledge_base_id": str(knowledge_base_id),
             "file_name": file.filename,
             "file_path": storage_path,
@@ -168,6 +169,7 @@ async def upload_document_v1(
         run_pipeline_task,
         job_id=job_id,
         tenant_id=auth.tenant_id,
+        integration_id=auth.integration_id,
         knowledge_base_id=str(knowledge_base_id),
         source_type="upload",
         file_path=str(tmp_file),
@@ -271,7 +273,6 @@ async def query_v1(
 ) -> QueryResponseV1:
     started = time.perf_counter()
     client = get_service_client()
-    _require_kbs(client, auth.tenant_id, payload.knowledge_base_ids)
     request_id = uuid.uuid4()
     # Compute once — tiktoken encoding is not free, and this value was
     # previously recomputed on every success/declined/error branch below.
@@ -281,7 +282,7 @@ async def query_v1(
         prepared = await prepare_query(
             query=payload.query,
             tenant_id=auth.tenant_id,
-            knowledge_base_ids=[str(kb_id) for kb_id in payload.knowledge_base_ids],
+            integration_id=auth.integration_id,
             match_count=payload.match_count,
             rerank=payload.rerank,
             prompt_name=payload.prompt_name,
@@ -300,7 +301,6 @@ async def query_v1(
             latency_ms=_elapsed_ms(started),
             input_tokens=query_token_count,
             error_code="pipeline_failed",
-            metadata={"knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
         )
         raise_api_error(500, "query.pipeline_failed", detail=str(exc))
 
@@ -329,7 +329,7 @@ async def query_v1(
             action="query.executed",
             resource_type="query",
             resource_id=str(request_id),
-            metadata={"declined": True, "knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
+            metadata={"declined": True},
         )
         return build_response(
             QueryResponseV1,
@@ -382,7 +382,6 @@ async def query_v1(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         metadata={
-            "knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids],
             "external_user_id": payload.external_user_id,
             "session_id": payload.session_id,
             "tags": payload.tags,
@@ -396,7 +395,7 @@ async def query_v1(
         action="query.executed",
         resource_type="query",
         resource_id=str(request_id),
-        metadata={"knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
+        metadata={},
     )
     return build_response(
         QueryResponseV1,
@@ -417,7 +416,6 @@ async def query_stream_v1(
     auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
 ) -> EventSourceResponse:
     client = get_service_client()
-    _require_kbs(client, auth.tenant_id, payload.knowledge_base_ids)
     request_id = str(uuid.uuid4())
     started = time.perf_counter()
     query_token_count = count_tokens(payload.query)
@@ -426,7 +424,7 @@ async def query_stream_v1(
         prepared = await prepare_query(
             query=payload.query,
             tenant_id=auth.tenant_id,
-            knowledge_base_ids=[str(kb_id) for kb_id in payload.knowledge_base_ids],
+            integration_id=auth.integration_id,
             match_count=payload.match_count,
             rerank=payload.rerank,
             prompt_name=payload.prompt_name,
@@ -514,7 +512,6 @@ async def query_stream_v1(
             latency_ms=prepared.retrieval_metadata.latency_ms.total,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            metadata={"knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
         )
         yield {
             "event": "done",
@@ -1067,30 +1064,6 @@ def _require_kb(client: Any, tenant_id: str, knowledge_base_id: str) -> dict[str
         raise_api_error(404, "platform.knowledge_base_not_found")
     return row
 
-
-def _require_kbs(client: Any, tenant_id: str, knowledge_base_ids: Iterable[UUID]) -> None:
-    ids = [str(kb_id) for kb_id in knowledge_base_ids]
-    if not ids:
-        return
-    # Previously fetched ALL knowledge_bases for the tenant and scanned in
-    # Python — unbounded and slow for large tenants. Filter server-side via
-    # `.in_()` so we only pull the rows we need to validate.
-    try:
-        rows = (
-            client.table("knowledge_bases")
-            .select("id")
-            .eq("tenant_id", tenant_id)
-            .in_("id", ids)
-            .execute()
-            .data
-            or []
-        )
-    except Exception as exc:
-        logger.error("platform.require_kbs_failed", tenant_id=tenant_id, error=str(exc))
-        raise_api_error(500, "common.internal_error")
-    found = {str(row["id"]) for row in rows}
-    if not all(kb_id in found for kb_id in ids):
-        raise_api_error(404, "platform.knowledge_base_not_found")
 
 
 def _kb_summary(row: dict[str, Any], message_key: str = "") -> KnowledgeBaseSummary:
