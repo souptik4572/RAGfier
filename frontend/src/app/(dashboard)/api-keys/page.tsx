@@ -48,9 +48,12 @@ export default function ApiKeysPage() {
 
       {revealedKey && (
         <SecretRevealBanner
+          open={!!revealedKey}
+          onOpenChange={(open) => {
+            if (!open) setRevealedKey(null);
+          }}
           secret={revealedKey.secret}
           prefix={revealedKey.prefix}
-          onDismiss={() => setRevealedKey(null)}
         />
       )}
 

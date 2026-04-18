@@ -36,7 +36,7 @@ function parseContentWithCitations(
 }
 
 export function ChatMessage({ message }: ChatMessageProps) {
-  const { setActiveCitation } = useChatStore();
+  const { focusCitation } = useChatStore();
   const isUser = message.role === 'user';
 
   if (isUser) {
@@ -72,7 +72,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <span className="text-gray-400 italic">Thinking…</span>
         ) : (
           <>
-            {parseContentWithCitations(message.content, message.citations, setActiveCitation)}
+            {parseContentWithCitations(message.content, message.citations, focusCitation)}
             {message.isStreaming && <StreamingCursor />}
           </>
         )}

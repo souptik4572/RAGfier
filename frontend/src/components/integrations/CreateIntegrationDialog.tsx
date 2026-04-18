@@ -85,7 +85,7 @@ export function CreateIntegrationDialog({
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-5 p-6 pt-0">
           <div>
-            <Label htmlFor="name">Integration name</Label>
+            <Label htmlFor="name" required>Integration name</Label>
             <Input
               id="name"
               placeholder="My RAG Integration"
@@ -97,7 +97,7 @@ export function CreateIntegrationDialog({
           </div>
 
           <div>
-            <Label htmlFor="environment">Environment</Label>
+            <Label htmlFor="environment" required>Environment</Label>
             <Select
               defaultValue="development"
               onValueChange={(val) =>

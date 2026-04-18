@@ -122,7 +122,7 @@ export function CreateApiKeyDialog({
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-5 p-6 pt-0">
           {/* Name */}
           <div>
-            <Label htmlFor="name">Key name</Label>
+            <Label htmlFor="name" required>Key name</Label>
             <Input
               id="name"
               placeholder="Production Server"
@@ -135,7 +135,7 @@ export function CreateApiKeyDialog({
 
           {/* Integration select */}
           <div>
-            <Label htmlFor="integration_id">Integration</Label>
+            <Label htmlFor="integration_id" required>Integration</Label>
             {integrations.length === 0 ? (
               <p className="text-sm text-red-500 mt-1">
                 Create an integration first before adding API keys.
@@ -163,7 +163,7 @@ export function CreateApiKeyDialog({
 
           {/* Scopes */}
           <div>
-            <Label>Scopes</Label>
+            <Label required>Scopes</Label>
             <Controller
               name="scopes"
               control={control}

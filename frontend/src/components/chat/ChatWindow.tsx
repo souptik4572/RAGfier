@@ -13,15 +13,23 @@ interface ChatWindowProps {
 }
 
 export function ChatWindow({ integrationId }: ChatWindowProps) {
-  const { messages, activeCitationSourceId, setActiveCitation, clearChat } = useChatStore();
+  const {
+    messages,
+    activeCitationSourceId,
+    citationFocusNonce,
+    setActiveCitation,
+    clearChat,
+  } = useChatStore();
   const { streamQuery } = useStreamQuery();
 
   const [input, setInput] = useState('');
-  const [matchCount, setMatchCount] = useState(5);
+  const [matchCount, setMatchCount] = useState(3);
   const [rerank, setRerank] = useState(true);
+  const [pulsingSourceId, setPulsingSourceId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const citationRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
 
   const isAnyStreaming = messages.some((m) => m.isStreaming);
 
@@ -29,6 +37,18 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Scroll the sidebar to the focused citation and pulse-highlight it
+  useEffect(() => {
+    if (citationFocusNonce === 0 || !activeCitationSourceId) return;
+    const el = citationRefs.current.get(activeCitationSourceId);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    setPulsingSourceId(activeCitationSourceId);
+    const timer = setTimeout(() => setPulsingSourceId(null), 1400);
+    return () => clearTimeout(timer);
+  }, [citationFocusNonce, activeCitationSourceId]);
 
   // Auto-resize textarea
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -165,8 +185,12 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
           activeCitations.map((citation) => (
             <CitationCard
               key={citation.chunk_id}
+              ref={(el) => {
+                citationRefs.current.set(citation.source_id, el);
+              }}
               citation={citation}
               isActive={activeCitationSourceId === citation.source_id}
+              isPulsing={pulsingSourceId === citation.source_id}
               onClick={() =>
                 setActiveCitation(
                   activeCitationSourceId === citation.source_id ? null : citation.source_id

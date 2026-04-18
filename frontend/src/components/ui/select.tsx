@@ -56,7 +56,7 @@ function Select({
       <SelectPrimitive.Portal>
         <SelectPrimitive.Content
           className={cn(
-            'relative z-50 min-w-[8rem] overflow-hidden',
+            'relative z-50 min-w-(--radix-select-trigger-width) max-h-(--radix-select-content-available-height) overflow-hidden',
             'bg-white rounded-lg border-2 border-[#E5E7EB]',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
@@ -71,14 +71,14 @@ function Select({
                 key={option.value}
                 value={option.value}
                 className={cn(
-                  'relative flex w-full cursor-pointer select-none items-center rounded-md px-4 py-2 text-sm font-medium',
+                  'relative flex w-full cursor-pointer select-none items-center rounded-md pl-4 pr-10 py-2 text-sm font-medium',
                   'text-[#111827] hover:bg-[#F3F4F6]',
                   'focus:bg-[#F3F4F6] focus:outline-none',
                   'data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
                 )}
               >
                 <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
-                <SelectPrimitive.ItemIndicator className="absolute right-3">
+                <SelectPrimitive.ItemIndicator className="absolute right-3 inline-flex items-center">
                   <Check className="h-4 w-4 text-[#3B82F6]" />
                 </SelectPrimitive.ItemIndicator>
               </SelectPrimitive.Item>
