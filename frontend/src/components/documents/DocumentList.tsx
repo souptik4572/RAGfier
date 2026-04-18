@@ -29,7 +29,7 @@ export function DocumentList({ documents, integrationId }: DocumentListProps) {
     if (!targetDoc) return;
     setDeletingId(targetDoc.id);
     try {
-      await deleteDocument(targetDoc.id);
+      await deleteDocument(integrationId, targetDoc.id);
       await queryClient.invalidateQueries({ queryKey: ['documents', integrationId] });
       toast.success('Document deleted');
     } catch (err) {

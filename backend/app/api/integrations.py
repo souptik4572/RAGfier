@@ -16,6 +16,7 @@ from app.api.platform_auth import PlatformAuthContext, require_platform_context
 from app.config import get_settings
 from app.models.database import get_service_client
 from app.models.schemas import (
+    DocumentDeleteResponse,
     DocumentListResponse,
     DocumentSummary,
     IntegrationQueryRequest,
@@ -173,6 +174,74 @@ async def list_documents_for_integration(
         if row.get("status") != "deleted"
     ]
     return build_response(DocumentListResponse, "platform.documents_listed", documents=docs)
+
+
+@router.delete(
+    "/{integration_id}/documents/{document_id}",
+    response_model=DocumentDeleteResponse,
+)
+async def delete_document_from_integration(
+    integration_id: UUID,
+    document_id: UUID,
+    auth: AuthContext = Depends(get_auth_context),
+) -> DocumentDeleteResponse:
+    client = get_service_client()
+    integration = resolve_integration(client, auth.tenant_id, str(integration_id))
+    resolved_integration_id = str(integration["id"])
+
+    job_rows = (
+        client.table("ingestion_jobs")
+        .select("id")
+        .eq("id", str(document_id))
+        .eq("tenant_id", auth.tenant_id)
+        .eq("integration_id", resolved_integration_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not job_rows:
+        raise_api_error(404, "platform.document_not_found")
+
+    deleted_chunks = (
+        client.table("documents")
+        .delete()
+        .eq("job_id", str(document_id))
+        .execute()
+        .data
+        or []
+    )
+    client.table("ingestion_jobs").update({"status": "deleted"}).eq(
+        "id", str(document_id)
+    ).execute()
+
+    await write_audit_log_async(
+        client,
+        tenant_id=auth.tenant_id,
+        actor_type="dashboard_user",
+        actor_id=auth.user_id,
+        action="document.deleted",
+        resource_type="document",
+        resource_id=str(document_id),
+        metadata={
+            "integration_id": resolved_integration_id,
+            "deleted_chunks": len(deleted_chunks),
+        },
+    )
+
+    logger.info(
+        "integrations.document_deleted",
+        tenant_id=auth.tenant_id,
+        integration_id=resolved_integration_id,
+        document_id=str(document_id),
+        deleted_chunks=len(deleted_chunks),
+    )
+    return build_response(
+        DocumentDeleteResponse,
+        "platform.document_deleted",
+        document_id=str(document_id),
+        deleted_chunks=len(deleted_chunks),
+    )
 
 
 # ── API-key-authenticated query endpoints ──────────────────────────────────────

@@ -1,8 +1,9 @@
 'use client';
 
 import { use, useState } from 'react';
+import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileText } from 'lucide-react';
+import { FileText, Play } from 'lucide-react';
 import { getIntegration } from '@/lib/api/integrations';
 import { listDocuments, uploadDocument } from '@/lib/api/documents';
 import { PageHeader } from '@/components/layout/PageHeader';
@@ -10,6 +11,7 @@ import { DocumentList } from '@/components/documents/DocumentList';
 import { UploadDropzone } from '@/components/documents/UploadDropzone';
 import { LoadingBlock } from '@/components/shared/LoadingBlock';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { Button } from '@/components/ui/button';
 
 interface DocumentsPageProps {
   params: Promise<{ id: string }>;
@@ -43,6 +45,14 @@ export default function DocumentsPage({ params }: DocumentsPageProps) {
       <PageHeader
         title={integration?.name ?? 'Documents'}
         subtitle="Manage documents for this integration"
+        action={
+          <Link href={`/integrations/${id}/playground`}>
+            <Button variant="outline" className="flex items-center gap-2 h-10">
+              <Play className="h-4 w-4" />
+              Playground
+            </Button>
+          </Link>
+        }
       />
 
       <div className="mb-8">

@@ -58,8 +58,11 @@ export async function uploadDocument(
     .json<UploadResponse>();
 }
 
-export async function deleteDocument(documentId: string): Promise<void> {
-  await apiClient.delete(`v1/documents/${documentId}`);
+export async function deleteDocument(
+  integrationId: string,
+  documentId: string
+): Promise<void> {
+  await apiClient.delete(`v1/integrations/${integrationId}/documents/${documentId}`);
 }
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
