@@ -207,8 +207,9 @@ marimo/_lsp/
 __marimo__/
 
 # AI Tooling
-SPEC*.md
+*SPEC*.md
 *IMPL.md
+DESIGN.md
 
 # Miscellaneous
 .DS_Store
