@@ -53,15 +53,39 @@ class Chunker:
             block_count=len(blocks),
         )
 
-        raw: list[tuple[str, ParsedBlock]] = []
+        # --- Section-aware grouping ---
+        # Consecutive non-heading blocks that share a section (and page,
+        # when page info exists) are merged before splitting. For long
+        # narrative sections this is a no-op — the splitter will still
+        # break them into ~chunk_size pieces. For short sections that
+        # *collectively* fit in chunk_size (resume "Projects", "Skills",
+        # "Experience" entries, contract paragraphs under one heading),
+        # this keeps the whole section together as a single chunk, which
+        # is what lets superlative / enumeration queries succeed.
+        groups: list[tuple[str, list[ParsedBlock]]] = []
         for block in blocks:
             if block.element_type == "heading":
-                # Headings are structural; the next block carries them via section_heading.
                 continue
-            pieces = self._splitter.split_text(block.text)
+            key = block.section_heading or ""
+            page = block.page_number
+            if groups:
+                prev_block = groups[-1][1][-1]
+                if (
+                    (prev_block.section_heading or "") == key
+                    and prev_block.page_number == page
+                ):
+                    groups[-1][1].append(block)
+                    continue
+            groups.append((key, [block]))
+
+        raw: list[tuple[str, ParsedBlock]] = []
+        for _key, member_blocks in groups:
+            representative = member_blocks[0]
+            combined = "\n\n".join(b.text for b in member_blocks)
+            pieces = self._splitter.split_text(combined)
             for piece in pieces:
                 if piece.strip():
-                    raw.append((piece, block))
+                    raw.append((piece, representative))
 
         total = len(raw)
         if total == 0:

@@ -74,16 +74,40 @@ class Settings(BaseSettings):
     generation_max_tokens: int = Field(default=2048, alias="GENERATION_MAX_TOKENS")
     generation_timeout_seconds: float = Field(default=30.0, alias="GENERATION_TIMEOUT_SECONDS")
 
-    dense_top_n: int = Field(default=20, alias="DENSE_TOP_N")
-    sparse_top_n: int = Field(default=20, alias="SPARSE_TOP_N")
+    dense_top_n: int = Field(default=30, alias="DENSE_TOP_N")
+    sparse_top_n: int = Field(default=30, alias="SPARSE_TOP_N")
     rrf_k: int = Field(default=60, alias="RRF_K")
-    rerank_top_k: int = Field(default=5, alias="RERANK_TOP_K")
-    relevance_threshold: float = Field(default=0.25, alias="RELEVANCE_THRESHOLD")
+    rerank_top_k: int = Field(default=8, alias="RERANK_TOP_K")
+    relevance_threshold: float = Field(default=0.20, alias="RELEVANCE_THRESHOLD")
+
+    # OpenAI "File Search"–style weighted RRF. Defaults bias semantic
+    # (0.7) over lexical (0.3); tune per-query if the corpus is keyword-
+    # heavy (e.g. code, SKUs) by passing overrides to HybridRetriever.
+    semantic_weight: float = Field(default=0.7, alias="SEMANTIC_WEIGHT")
+    full_text_weight: float = Field(default=0.3, alias="FULL_TEXT_WEIGHT")
 
     reranker_provider: str = Field(default="cohere", alias="RERANKER_PROVIDER")
     local_reranker_model: str = Field(
         default="cross-encoder/ms-marco-MiniLM-L-6-v2",
         alias="LOCAL_RERANKER_MODEL",
+    )
+
+    # --- Anthropic contextual retrieval (per-chunk situated context) ---
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    contextualization_enabled: bool = Field(
+        default=False, alias="CONTEXTUALIZATION_ENABLED"
+    )
+    contextualizer_model: str = Field(
+        default="claude-haiku-4-5-20251001", alias="CONTEXTUALIZER_MODEL"
+    )
+    contextualizer_max_tokens: int = Field(
+        default=150, alias="CONTEXTUALIZER_MAX_TOKENS"
+    )
+    contextualizer_max_concurrency: int = Field(
+        default=5, alias="CONTEXTUALIZER_MAX_CONCURRENCY"
+    )
+    contextualizer_max_doc_chars: int = Field(
+        default=180000, alias="CONTEXTUALIZER_MAX_DOC_CHARS"
     )
 
     default_prompt_name: str = Field(
