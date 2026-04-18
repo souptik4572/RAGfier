@@ -2,7 +2,9 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getHealth } from '@/lib/api/health';
-import { listIntegrations } from '@/lib/api/integrations';
+import { listIntegrations, countIntegrations } from '@/lib/api/integrations';
+import { countApiKeys } from '@/lib/api/api-keys';
+import { countEvalRuns } from '@/lib/api/eval';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { LoadingBlock } from '@/components/shared/LoadingBlock';
@@ -21,7 +23,23 @@ export default function DashboardPage() {
     queryFn: listIntegrations,
   });
 
-  const integrationCount = integrations?.length ?? 0;
+  const { data: integrationCountData, isLoading: integrationCountLoading } =
+    useQuery({
+      queryKey: ['integrations', 'count'],
+      queryFn: countIntegrations,
+    });
+
+  const { data: apiKeyCount, isLoading: apiKeyCountLoading } = useQuery({
+    queryKey: ['api-keys', 'count'],
+    queryFn: countApiKeys,
+  });
+
+  const { data: evalRunCount, isLoading: evalRunCountLoading } = useQuery({
+    queryKey: ['eval-runs', 'count'],
+    queryFn: countEvalRuns,
+  });
+
+  const integrationCount = integrationCountData ?? integrations?.length ?? 0;
 
   return (
     <div>
@@ -33,8 +51,11 @@ export default function DashboardPage() {
       {/* Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6 mb-10">
         {/* Integrations */}
-        <div className="bg-[#3B82F6] rounded-lg p-6 text-white hover:scale-[1.02] transition-all duration-200">
-          {integrationsLoading ? (
+        <Link
+          href="/integrations"
+          className="bg-[#3B82F6] rounded-lg p-6 text-white hover:scale-[1.02] transition-all duration-200 block"
+        >
+          {integrationsLoading || integrationCountLoading ? (
             <LoadingBlock className="h-12 w-20 bg-white/30 rounded-md mb-2" />
           ) : (
             <p className="text-5xl font-extrabold">{integrationCount}</p>
@@ -42,21 +63,35 @@ export default function DashboardPage() {
           <p className="mt-2 text-base font-semibold text-white/80">
             Integrations
           </p>
-        </div>
+        </Link>
 
-        {/* API Keys placeholder */}
-        <div className="bg-[#10B981] rounded-lg p-6 text-white hover:scale-[1.02] transition-all duration-200">
-          <p className="text-5xl font-extrabold">—</p>
+        {/* API Keys */}
+        <Link
+          href="/api-keys"
+          className="bg-[#10B981] rounded-lg p-6 text-white hover:scale-[1.02] transition-all duration-200 block"
+        >
+          {apiKeyCountLoading ? (
+            <LoadingBlock className="h-12 w-20 bg-white/30 rounded-md mb-2" />
+          ) : (
+            <p className="text-5xl font-extrabold">{apiKeyCount ?? 0}</p>
+          )}
           <p className="mt-2 text-base font-semibold text-white/80">API Keys</p>
-        </div>
+        </Link>
 
-        {/* Eval Runs placeholder */}
-        <div className="bg-[#F59E0B] rounded-lg p-6 text-[#111827] hover:scale-[1.02] transition-all duration-200">
-          <p className="text-5xl font-extrabold">—</p>
+        {/* Eval Runs */}
+        <Link
+          href="/eval"
+          className="bg-[#F59E0B] rounded-lg p-6 text-[#111827] hover:scale-[1.02] transition-all duration-200 block"
+        >
+          {evalRunCountLoading ? (
+            <LoadingBlock className="h-12 w-20 bg-[#111827]/20 rounded-md mb-2" />
+          ) : (
+            <p className="text-5xl font-extrabold">{evalRunCount ?? 0}</p>
+          )}
           <p className="mt-2 text-base font-semibold text-[#111827]/70">
             Eval Runs
           </p>
-        </div>
+        </Link>
 
         {/* System Health */}
         <div className="bg-white rounded-lg p-6 hover:scale-[1.02] transition-all duration-200">

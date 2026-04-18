@@ -1,6 +1,6 @@
 'use client';
 
-import { use } from 'react';
+import { use, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 import { getIntegration } from '@/lib/api/integrations';
@@ -9,7 +9,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { LoadingBlock } from '@/components/shared/LoadingBlock';
 import { formatDate } from '@/lib/utils';
-import { FileText, Play, Calendar, Tag } from 'lucide-react';
+import { FileText, Play, Calendar, Tag, Pencil, Trash2 } from 'lucide-react';
+import { EditIntegrationDialog } from '@/components/integrations/EditIntegrationDialog';
+import { DeleteIntegrationDialog } from '@/components/integrations/DeleteIntegrationDialog';
 
 interface IntegrationDetailPageProps {
   params: Promise<{ id: string }>;
@@ -19,6 +21,8 @@ export default function IntegrationDetailPage({
   params,
 }: IntegrationDetailPageProps) {
   const { id } = use(params);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data: integration, isLoading } = useQuery({
     queryKey: ['integration', id],
@@ -163,9 +167,39 @@ export default function IntegrationDetailPage({
                 Open Playground
               </Button>
             </Link>
+
+            <div className="h-px bg-[#F3F4F6] my-2" />
+
+            <Button
+              variant="secondary"
+              onClick={() => setEditOpen(true)}
+              className="w-full flex items-center gap-2 h-12"
+            >
+              <Pencil className="h-4 w-4" />
+              Edit Integration
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteOpen(true)}
+              className="w-full flex items-center gap-2 h-12 border-red-300 text-red-600 hover:bg-red-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete Integration
+            </Button>
           </div>
         </div>
       </div>
+
+      <EditIntegrationDialog
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        integration={integration}
+      />
+      <DeleteIntegrationDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        integration={integration}
+      />
     </div>
   );
 }

@@ -30,6 +30,18 @@ interface ApiKeyListResponse {
   api_keys: ApiKey[];
 }
 
+interface CountResponse {
+  message: string;
+  count: number;
+}
+
+export async function countApiKeys(): Promise<number> {
+  const res = await apiClient
+    .get('platform/api-keys/count')
+    .json<CountResponse>();
+  return res.count ?? 0;
+}
+
 export interface CreateApiKeyPayload {
   name: string;
   integration_id: string;

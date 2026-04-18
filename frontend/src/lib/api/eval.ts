@@ -48,6 +48,16 @@ interface EvalRunListResponse {
   runs: EvalRunSummary[];
 }
 
+interface CountResponse {
+  message: string;
+  count: number;
+}
+
+export async function countEvalRuns(): Promise<number> {
+  const res = await apiClient.get('eval/runs/count').json<CountResponse>();
+  return res.count ?? 0;
+}
+
 interface EvalSampleListResponse {
   message: string;
   run_id: string;

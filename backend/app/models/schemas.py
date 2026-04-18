@@ -284,6 +284,27 @@ class IntegrationListResponse(BaseModel):
     integrations: List[IntegrationSummary]
 
 
+class IntegrationUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1)
+    environment: Optional[str] = Field(default=None, min_length=1)
+    metadata: Optional[dict[str, Any]] = None
+    is_default: Optional[bool] = None
+
+
+class IntegrationDeleteResponse(BaseModel):
+    message: str
+    integration_id: UUID
+    deleted_documents: int = 0
+    deleted_jobs: int = 0
+    deleted_api_keys: int = 0
+    deleted_storage_objects: int = 0
+
+
+class CountResponse(BaseModel):
+    message: str
+    count: int
+
+
 class ApiKeyCreateRequest(BaseModel):
     integration_id: UUID
     name: str = Field(..., min_length=1)
