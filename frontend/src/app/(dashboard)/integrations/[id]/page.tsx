@@ -122,13 +122,13 @@ export default function IntegrationDetailPage({
               </dd>
             </div>
 
-            {integration.metadata && (
+            {integration.metadata && Object.keys(integration.metadata).length > 0 && (
               <div className="flex gap-4">
                 <dt className="w-32 text-sm font-semibold text-gray-500">
                   Metadata
                 </dt>
-                <dd className="text-sm text-gray-500 flex-1">
-                  {integration.metadata}
+                <dd className="text-sm text-gray-500 flex-1 font-mono break-all">
+                  {JSON.stringify(integration.metadata)}
                 </dd>
               </div>
             )}

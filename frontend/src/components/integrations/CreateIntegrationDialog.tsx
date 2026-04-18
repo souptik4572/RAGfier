@@ -1,6 +1,6 @@
 'use client';
 
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -43,7 +43,11 @@ export function CreateIntegrationDialog({
     setValue,
     formState: { errors, isSubmitting },
   } = useForm<FormInput, unknown, FormOutput>({
-    resolver: zodResolver(createIntegrationSchema),
+    resolver: zodResolver(createIntegrationSchema) as unknown as Resolver<
+      FormInput,
+      unknown,
+      FormOutput
+    >,
     defaultValues: {
       environment: 'development',
       metadata: '',
