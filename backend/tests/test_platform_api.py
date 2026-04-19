@@ -524,3 +524,106 @@ def test_delete_integration_returns_404_for_unknown_id(client: TestClient) -> No
         headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
     )
     assert resp.status_code == 404
+
+
+def test_platform_usage_aggregates_request_logs_for_tenant(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    fake_db.table("request_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": TENANT_ID,
+            "endpoint": "/v1/query",
+            "method": "POST",
+            "status_code": 200,
+            "latency_ms": 120,
+            "input_tokens": 40,
+            "output_tokens": 60,
+            "created_at": "2026-04-17T10:00:00+00:00",
+        }
+    ).execute()
+    fake_db.table("request_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": TENANT_ID,
+            "endpoint": "/v1/query",
+            "method": "POST",
+            "status_code": 500,
+            "latency_ms": 200,
+            "input_tokens": 10,
+            "output_tokens": 0,
+            "created_at": "2026-04-17T12:00:00+00:00",
+        }
+    ).execute()
+    # A row for a different tenant that must not leak.
+    fake_db.table("request_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": OTHER_TENANT_ID,
+            "endpoint": "/v1/query",
+            "method": "POST",
+            "status_code": 200,
+            "latency_ms": 50,
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "created_at": "2026-04-17T10:00:00+00:00",
+        }
+    ).execute()
+
+    resp = client.get(
+        "/platform/usage",
+        headers={"Authorization": "Bearer header.payload.sig"},
+    )
+    assert resp.status_code == 200, resp.text
+    buckets = resp.json()["buckets"]
+    assert len(buckets) == 1
+    bucket = buckets[0]
+    assert bucket["request_count"] == 2
+    assert bucket["success_count"] == 1
+    assert bucket["error_count"] == 1
+    assert bucket["total_input_tokens"] == 50
+    assert bucket["total_output_tokens"] == 60
+    assert bucket["avg_latency_ms"] == 160.0
+
+
+def test_platform_audit_logs_returns_tenant_entries_only(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    fake_db.table("audit_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": TENANT_ID,
+            "actor_type": "dashboard_user",
+            "actor_id": "user-1",
+            "action": "integration.created",
+            "resource_type": "integration",
+            "resource_id": str(uuid.uuid4()),
+            "metadata": {},
+            "created_at": "2026-04-17T09:00:00+00:00",
+        }
+    ).execute()
+    fake_db.table("audit_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": OTHER_TENANT_ID,
+            "actor_type": "dashboard_user",
+            "actor_id": "user-99",
+            "action": "integration.created",
+            "resource_type": "integration",
+            "resource_id": str(uuid.uuid4()),
+            "metadata": {},
+            "created_at": "2026-04-17T09:00:00+00:00",
+        }
+    ).execute()
+
+    resp = client.get(
+        "/platform/audit-logs",
+        headers={"Authorization": "Bearer header.payload.sig"},
+    )
+    assert resp.status_code == 200, resp.text
+    entries = resp.json()["audit_logs"]
+    assert len(entries) == 1
+    assert entries[0]["tenant_id"] == TENANT_ID
+    assert entries[0]["action"] == "integration.created"

@@ -18,8 +18,8 @@ const navItems = [
 	{ label: "Integrations", href: "/integrations", icon: Layers },
 	{ label: "API Keys", href: "/api-keys", icon: Key },
 	{ label: "Eval Runs", href: "/eval", icon: FlaskConical },
-	//   { label: 'Audit Logs', href: '/audit-logs', icon: ScrollText },
-	//   { label: 'Usage', href: '/usage', icon: BarChart3 },
+	{ label: "Audit Logs", href: "/audit-logs", icon: ScrollText },
+	{ label: "Usage", href: "/usage", icon: BarChart3 },
 	{ label: "Prompts", href: "/prompts", icon: FileText },
 ];
 

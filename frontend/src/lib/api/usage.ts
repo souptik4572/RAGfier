@@ -25,7 +25,7 @@ export async function listUsage(
   const searchParams: Record<string, string | number> = {};
   if (params.days) searchParams.days = params.days;
   const res = await apiClient
-    .get('v1/usage', { searchParams })
+    .get('platform/usage', { searchParams })
     .json<UsageResponse>();
   return res.buckets ?? [];
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.auth import AuthContext, get_auth_context
 from app.config import get_settings
@@ -13,16 +13,23 @@ from app.models.schemas import (
     ApiKeyCreateResponse,
     ApiKeyListResponse,
     ApiKeySummary,
+    AuditLogListResponse,
     CountResponse,
     IntegrationCreateRequest,
     IntegrationDeleteResponse,
     IntegrationListResponse,
     IntegrationSummary,
     IntegrationUpdateRequest,
+    UsageResponse,
 )
 from app.utils.api_errors import build_response, raise_api_error
 from app.utils.logger import get_logger
-from app.utils.platform_observability import write_audit_log, write_audit_log_async
+from app.utils.platform_observability import (
+    aggregate_usage_buckets,
+    list_audit_log_entries,
+    write_audit_log,
+    write_audit_log_async,
+)
 from app.utils.platform_security import generate_api_key, hash_api_key
 
 logger = get_logger(__name__)
@@ -514,4 +521,32 @@ async def delete_integration(
         deleted_jobs=deleted_jobs,
         deleted_api_keys=deleted_api_keys,
         deleted_storage_objects=deleted_storage_objects,
+    )
+
+
+@router.get("/usage", response_model=UsageResponse)
+async def dashboard_list_usage(
+    days: int = Query(default=30, ge=1, le=90),
+    auth: AuthContext = Depends(get_auth_context),
+) -> UsageResponse:
+    client = get_service_client()
+    usage_buckets = aggregate_usage_buckets(client, tenant_id=auth.tenant_id, days=days)
+    return build_response(
+        UsageResponse,
+        "platform.usage_listed",
+        buckets=[bucket.model_dump(mode="json") for bucket in usage_buckets],
+    )
+
+
+@router.get("/audit-logs", response_model=AuditLogListResponse)
+async def dashboard_list_audit_logs(
+    limit: int = Query(default=200, ge=1, le=1000),
+    auth: AuthContext = Depends(get_auth_context),
+) -> AuditLogListResponse:
+    client = get_service_client()
+    entries = list_audit_log_entries(client, tenant_id=auth.tenant_id, limit=limit)
+    return build_response(
+        AuditLogListResponse,
+        "platform.audit_logs_listed",
+        audit_logs=[entry.model_dump(mode="json") for entry in entries],
     )

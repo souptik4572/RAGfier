@@ -27,7 +27,7 @@ export async function listAuditLogs(
   const searchParams: Record<string, string | number> = {};
   if (params.limit) searchParams.limit = params.limit;
   const res = await apiClient
-    .get('v1/audit-logs', { searchParams })
+    .get('platform/audit-logs', { searchParams })
     .json<AuditLogListResponse>();
   return res.audit_logs ?? [];
 }
