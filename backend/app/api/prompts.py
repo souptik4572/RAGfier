@@ -35,6 +35,8 @@ def _rows_to_summaries(rows: list[Dict[str, Any]]) -> list[PromptSummary]:
                 metadata=row.get("metadata") or {},
                 source="database",
                 created_at=row.get("created_at"),
+                system_prompt=row.get("system_prompt"),
+                user_prompt_template=row.get("user_prompt_template"),
             )
         )
     return summaries
@@ -75,6 +77,8 @@ def _yaml_prompt_summaries(existing_names: set[str]) -> list[PromptSummary]:
                 metadata=data.get("metadata") or {},
                 source="yaml",
                 created_at=None,
+                system_prompt=data.get("system_prompt"),
+                user_prompt_template=data.get("user_prompt_template"),
             )
         )
     return summaries

@@ -162,6 +162,8 @@ class PromptSummary(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     source: str = "database"
     created_at: Optional[datetime] = None
+    system_prompt: Optional[str] = None
+    user_prompt_template: Optional[str] = None
 
 
 class PromptListResponse(BaseModel):
