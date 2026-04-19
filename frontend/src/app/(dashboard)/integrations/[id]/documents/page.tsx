@@ -47,9 +47,9 @@ export default function DocumentsPage({ params }: DocumentsPageProps) {
         subtitle="Manage documents for this integration"
         action={
           <Link href={`/integrations/${id}/playground`}>
-            <Button variant="outline" className="flex items-center gap-2 h-10">
+            <Button variant="outline" className="flex items-center gap-2 h-10 px-4 sm:px-6">
               <Play className="h-4 w-4" />
-              Playground
+              <span>Playground</span>
             </Button>
           </Link>
         }

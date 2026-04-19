@@ -101,7 +101,7 @@ export function CreatePromptDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-5 p-6 pt-0">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-5 p-5 sm:p-6 pt-0">
           <div>
             <Label htmlFor="name" required>
               Prompt name

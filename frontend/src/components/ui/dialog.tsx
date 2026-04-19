@@ -42,7 +42,7 @@ const DialogContent = React.forwardRef<
       ref={ref}
       className={cn(
         'fixed left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%]',
-        'bg-white rounded-lg max-w-lg w-full p-0',
+        'bg-white rounded-lg max-w-lg w-[calc(100%-2rem)] sm:w-full max-h-[calc(100vh-2rem)] overflow-y-auto p-0',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
@@ -52,7 +52,10 @@ const DialogContent = React.forwardRef<
     >
       {children}
       {!hideDefaultClose && (
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100 transition-opacity">
+        <DialogPrimitive.Close
+          className="absolute right-4 top-4 rounded-md opacity-70 hover:opacity-100 transition-opacity p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
+          aria-label="Close dialog"
+        >
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
@@ -66,7 +69,7 @@ const DialogHeader = ({
   className,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn('p-6 pb-4', className)} {...props} />
+  <div className={cn('p-5 sm:p-6 pb-4', className)} {...props} />
 );
 DialogHeader.displayName = 'DialogHeader';
 

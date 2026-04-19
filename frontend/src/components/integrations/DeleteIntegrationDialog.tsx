@@ -80,7 +80,7 @@ export function DeleteIntegrationDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 p-6 pt-0">
+        <div className="space-y-5 p-5 sm:p-6 pt-0">
           <div className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700">
             <p className="font-semibold">You are about to delete:</p>
             <p className="mt-1 font-mono text-red-900">{integration.name}</p>

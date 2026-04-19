@@ -68,8 +68,117 @@ export function ApiKeyTable({ apiKeys, integrations }: ApiKeyTableProps) {
 
   return (
     <>
-      <div className="bg-white rounded-lg overflow-hidden">
-        <table className="w-full border-collapse">
+      {/* Mobile card view */}
+      <div className="md:hidden space-y-3">
+        {apiKeys.map((key) => {
+          const isRevoked = key.status === 'revoked';
+          return (
+            <div
+              key={key.id}
+              className={cn(
+                'rounded-lg p-4 space-y-3',
+                isRevoked ? 'bg-[#F3F4F6]' : 'bg-white'
+              )}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-[#111827] truncate">
+                    {key.name}
+                  </p>
+                  <p className="text-xs text-gray-500 truncate mt-0.5">
+                    {integrationNameById.get(key.integration_id) ?? (
+                      <span className="font-mono">
+                        {key.integration_id.slice(0, 8)}…
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    'shrink-0 rounded-md text-xs font-semibold uppercase tracking-wider px-2 py-1',
+                    statusStyles[key.status] ?? 'bg-[#F3F4F6] text-[#111827]'
+                  )}
+                >
+                  {key.status}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                <div>
+                  <p className="font-semibold uppercase tracking-wider text-gray-400 mb-0.5">
+                    Prefix
+                  </p>
+                  <p
+                    className={cn(
+                      'font-mono text-[#111827]',
+                      isRevoked && 'line-through text-gray-400'
+                    )}
+                  >
+                    {key.prefix}
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold uppercase tracking-wider text-gray-400 mb-0.5">
+                    Expires
+                  </p>
+                  <p className="text-gray-500">
+                    {key.expires_at ? formatDate(key.expires_at) : 'Never'}
+                  </p>
+                </div>
+                <div className="col-span-2">
+                  <p className="font-semibold uppercase tracking-wider text-gray-400 mb-1">
+                    Last used
+                  </p>
+                  <p className="text-gray-500">
+                    {key.last_used_at ? formatDate(key.last_used_at) : '—'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-1">
+                {key.scopes.map((scope) => (
+                  <span
+                    key={scope}
+                    className={cn(
+                      'rounded-md text-xs font-semibold px-2 py-0.5',
+                      scopeStyles[scope] ?? 'bg-[#F3F4F6] text-[#111827]'
+                    )}
+                  >
+                    {scope}
+                  </span>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2 pt-1 border-t border-[#E5E7EB]">
+                <button
+                  onClick={() => {
+                    setCodeKey(key);
+                    setCodeOpen(true);
+                  }}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold text-[#3B82F6] hover:bg-blue-50 transition-colors duration-150"
+                >
+                  <Code2 className="h-3.5 w-3.5" />
+                  View code
+                </button>
+                {!isRevoked && (
+                  <button
+                    onClick={() => handleRevokeClick(key)}
+                    disabled={revokingId === key.id}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold text-red-600 hover:bg-red-50 transition-colors duration-150 disabled:opacity-50"
+                  >
+                    <Ban className="h-3.5 w-3.5" />
+                    Revoke
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Tablet/Desktop table */}
+      <div className="hidden md:block bg-white rounded-lg overflow-x-auto">
+        <table className="w-full min-w-[900px] border-collapse">
           <thead>
             <tr className="bg-[#111827] text-white">
               <th className="text-left text-xs font-semibold uppercase tracking-wider px-4 py-3">
@@ -87,10 +196,10 @@ export function ApiKeyTable({ apiKeys, integrations }: ApiKeyTableProps) {
               <th className="text-left text-xs font-semibold uppercase tracking-wider px-4 py-3">
                 Status
               </th>
-              <th className="text-left text-xs font-semibold uppercase tracking-wider px-4 py-3">
+              <th className="hidden lg:table-cell text-left text-xs font-semibold uppercase tracking-wider px-4 py-3">
                 Last Used
               </th>
-              <th className="text-left text-xs font-semibold uppercase tracking-wider px-4 py-3">
+              <th className="hidden lg:table-cell text-left text-xs font-semibold uppercase tracking-wider px-4 py-3">
                 Expires
               </th>
               <th className="text-right text-xs font-semibold uppercase tracking-wider px-4 py-3">
@@ -154,10 +263,10 @@ export function ApiKeyTable({ apiKeys, integrations }: ApiKeyTableProps) {
                       {key.status}
                     </span>
                   </td>
-                  <td className="px-4 py-4 text-sm text-gray-500">
+                  <td className="hidden lg:table-cell px-4 py-4 text-sm text-gray-500">
                     {key.last_used_at ? formatDate(key.last_used_at) : '—'}
                   </td>
-                  <td className="px-4 py-4 text-sm text-gray-500">
+                  <td className="hidden lg:table-cell px-4 py-4 text-sm text-gray-500">
                     {key.expires_at ? formatDate(key.expires_at) : 'Never'}
                   </td>
                   <td className="px-4 py-4 text-right">

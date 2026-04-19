@@ -13,7 +13,9 @@ datasets, Ragas-based scoring, custom RAG quality metrics, persisted
 evaluation history, `/eval` APIs, and a GitHub Actions quality gate.
 Phase 4 adds the first hosted-platform slice: API-key-based `/v1`
 APIs, knowledge bases, integrations, managed connector records,
-audit/request logging, and a server SDK.
+audit/request logging, a server SDK, and a Next.js 15 operator dashboard
+(signup/login, integrations, API keys, document ingest, streaming query
+playground with citations, eval, prompts, audit logs, usage).
 
 See [SPEC.md](SPEC.md) (Phase 3) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
 full technical specs, and [AGENTS.md](AGENTS.md) for coding conventions.
@@ -25,13 +27,16 @@ The repository is split into two top-level workspaces:
 ```
 RAGfier/
 ├── backend/    FastAPI application, evaluation pipeline, SQL, scripts, SDK, tests
-├── frontend/   Frontend application (placeholder — not yet implemented)
+├── frontend/   Next.js 15 operator dashboard (App Router, Tailwind v4, Zustand, TanStack Query)
 └── docker-compose.yml  Single multi-service compose file for the whole stack
 ```
 
-All backend work lives under `backend/`. The frontend workspace is an empty
-placeholder ready to receive a UI implementation that talks to the backend
-through the existing REST/SSE APIs.
+The backend lives under `backend/` and exposes JWT + API-key `/v1` REST and
+SSE surfaces. The frontend under `frontend/` is a production-grade Next.js
+operator dashboard that consumes those APIs — tenant signup/login, integration
+management, API key lifecycle, document ingestion, streaming query playground
+with citations and PDF overlay, eval runs, prompt management, audit logs, and
+usage rollups.
 
 ## Configuration Model
 
@@ -593,9 +598,57 @@ RAGfier/
 │   ├── requirements.txt
 │   ├── pyproject.toml
 │   └── .env.example
-├── frontend/                        Frontend workspace (placeholder)
-│   └── .gitkeep
-├── docker-compose.yml               Multi-service compose: migrate + backend + frontend stub
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── layout.tsx               Root layout (Metadata, Viewport, Outfit font)
+│   │   │   ├── global-error.tsx         Top-level failure renderer
+│   │   │   ├── error.tsx                Route-level error boundary
+│   │   │   ├── not-found.tsx            404 page
+│   │   │   ├── loading.tsx              Skeleton placeholder
+│   │   │   ├── icon.svg / apple-icon.svg
+│   │   │   ├── (auth)/
+│   │   │   │   ├── login/               POST /auth/login form
+│   │   │   │   ├── signup/              POST /auth/signup form
+│   │   │   │   └── error.tsx            Auth-area error boundary
+│   │   │   └── (dashboard)/
+│   │   │       ├── layout.tsx           Sidebar + Topbar + skip-link shell
+│   │   │       ├── error.tsx            Dashboard error boundary
+│   │   │       ├── loading.tsx          Dashboard skeleton
+│   │   │       ├── dashboard/           Home overview
+│   │   │       ├── integrations/        List + [id]/documents + [id]/playground
+│   │   │       ├── api-keys/            Platform API key management
+│   │   │       ├── prompts/             Prompt versioning UI
+│   │   │       ├── eval/                Eval runs + [runId] drill-down
+│   │   │       ├── audit-logs/          /v1/audit-logs viewer
+│   │   │       └── usage/               /v1/usage rollups
+│   │   ├── components/
+│   │   │   ├── ui/                      Radix + shadcn primitives (Button, Input, Select, Dialog…)
+│   │   │   ├── layout/                  Sidebar, Topbar, PageHeader, Breadcrumbs
+│   │   │   ├── auth/                    Signup/login forms (react-hook-form + zod)
+│   │   │   ├── integrations/            Create/edit/delete integration dialogs
+│   │   │   ├── documents/               UploadDropzone, DocumentList
+│   │   │   ├── chat/                    ChatWindow (SSE streaming, citations, PDF overlay)
+│   │   │   ├── api-keys/                ApiKeyTable, CreateApiKeyDialog, SecretRevealBanner
+│   │   │   ├── eval/                    EvalRunCard, EvalSampleTable, StartEvalRunDialog
+│   │   │   ├── prompts/                 CreatePromptDialog, PromptDetail
+│   │   │   ├── audit/                   AuditLogTable
+│   │   │   └── shared/                  EmptyState, ConfirmDialog, Skeleton, ErrorBoundary, CopyButton
+│   │   ├── lib/
+│   │   │   ├── api/                     ky-based typed clients for each backend surface
+│   │   │   ├── store/                   Zustand auth/UI/chat stores
+│   │   │   ├── hooks/                   TanStack Query hooks + SSE stream hook
+│   │   │   └── schemas/                 Zod request/response schemas
+│   │   └── styles/globals.css           Tailwind v4 + focus-visible ring + skip-link + reduced-motion
+│   ├── public/robots.txt                Operator SaaS — no indexing
+│   ├── Dockerfile                       Multi-stage Next.js standalone build
+│   ├── .dockerignore
+│   ├── next.config.ts                   output: 'standalone' for Docker
+│   ├── tailwind.config.ts
+│   ├── tsconfig.json
+│   ├── package.json
+│   └── .env.local.example               NEXT_PUBLIC_API_URL
+├── docker-compose.yml               Multi-service compose: migrate + backend + frontend
 └── README.md
 ```
 
@@ -716,16 +769,45 @@ docker compose up --build --force-recreate
 
 ### Frontend service
 
-The `frontend` service is defined but commented out in `docker-compose.yml`.
-Once the frontend is implemented under `frontend/`, uncomment that block and
-fill in the correct `build.dockerfile` path. The stub is pre-wired with:
+The `frontend` service is active in `docker-compose.yml` and builds the
+Next.js operator dashboard via [frontend/Dockerfile](frontend/Dockerfile) — a
+multi-stage build that outputs a standalone Next.js server (`output:
+'standalone'`) and runs as a non-root user under Node 22 alpine. The
+`NEXT_PUBLIC_API_URL` value is baked in at build time (client bundles inline
+public env vars) and is propagated from `.env`:
 
 ```yaml
-environment:
-  - NEXT_PUBLIC_API_URL=http://backend:8000
-depends_on:
-  - backend
+frontend:
+  build:
+    context: ./frontend
+    dockerfile: Dockerfile
+    args:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+  ports:
+    - "3000:3000"
+  environment:
+    - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    - NODE_ENV=production
+  depends_on:
+    - backend
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
 ```
+
+Run only the frontend image:
+
+```bash
+docker compose up --build frontend
+```
+
+When calling the backend from a browser on your host (not inside the
+container), set `NEXT_PUBLIC_API_URL=http://localhost:8000` in the root `.env`
+so the build-arg resolves to the host-reachable URL.
 
 ### Common Docker gotchas
 
@@ -1107,6 +1189,129 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## Frontend
+
+The operator dashboard is a Next.js 15 App Router application that consumes
+the backend JWT and API-key surfaces. It is the primary UI for tenants to
+manage integrations, ingest documents, stream queries against a knowledge
+base with live citations, inspect evaluation runs, manage prompt versions,
+and audit request history.
+
+### Tech stack
+
+| Layer | Choice |
+|-------|--------|
+| Framework | Next.js 15 (App Router, React 19, `output: 'standalone'`, Turbopack build) |
+| Styling | Tailwind CSS v4 (via `@tailwindcss/postcss`), CSS variables, Outfit web font |
+| UI primitives | shadcn/ui components over Radix UI (Dialog, Select, Label, Separator, Checkbox, Toast) |
+| Forms | `react-hook-form` + `zod` + `@hookform/resolvers` |
+| Data fetching | `@tanstack/react-query` for queries/mutations |
+| HTTP client | `ky` (timeouts, retries, JWT + API-key injection) |
+| Streaming | Native `fetch` + `ReadableStream` for SSE (`sources` → `token`… → `done`) |
+| Client state | `zustand` for auth session, UI, and chat stores |
+| Icons | `lucide-react` |
+| Toasts | `sonner` |
+| Notifications | `@radix-ui/react-toast` |
+
+### Quickstart
+
+```bash
+cd frontend
+
+# 1. Install
+npm ci
+
+# 2. Configure
+cp .env.local.example .env.local
+# .env.local contents:
+# NEXT_PUBLIC_API_URL=http://localhost:8000
+
+# 3. Dev server (Turbopack)
+npm run dev                # http://localhost:3000
+
+# 4. Production build
+npm run build              # .next/standalone + .next/static
+npm run start              # serve the standalone build
+
+# 5. Quality gates
+npm run lint
+npm run typecheck
+```
+
+### Environment
+
+Client-reachable config lives in `frontend/.env.local`. Only `NEXT_PUBLIC_*`
+values are shipped to the browser.
+
+```dotenv
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+In Docker, `NEXT_PUBLIC_API_URL` is a build arg because Next.js inlines
+`NEXT_PUBLIC_*` values at build time — rebuild the image whenever the API
+URL changes.
+
+### Feature surfaces
+
+- **Auth** — signup/login against `/auth/signup` and `/auth/login`; JWT
+  persisted in `zustand` auth store and forwarded by the `ky` client.
+- **Integrations** — list + create + edit + delete against
+  `/platform/integrations`. Default global integration is pinned first.
+- **API keys** — list, create (secret shown exactly once via
+  `SecretRevealBanner`), revoke. Scopes picker maps to
+  `query:read` / `documents:read` / `documents:write` / `kb:read` /
+  `kb:write` / `analytics:read`. Includes a code-example dialog generating
+  ready-to-paste `curl` and Python snippets.
+- **Documents** — drag-and-drop ingest via `UploadDropzone`, job progress
+  polling against `/status/{job_id}`, and a `DocumentList` showing chunk
+  counts and source types.
+- **Playground** — full chat UI over `/v1/integrations/{id}/query/stream`.
+  Renders `sources` as citation cards before tokens begin, streams tokens
+  progressively, and supports a PDF overlay that opens the source chunk
+  against its page + bounding box.
+- **Eval** — start runs, list recent runs, drill into per-sample results.
+- **Prompts** — list versions, create new ones, view the active row per
+  `(tenant_id, name)`.
+- **Audit logs + Usage** — paginated views over `/v1/audit-logs` and
+  `/v1/usage`.
+
+### Accessibility
+
+- Global keyboard focus ring (`*:focus-visible { box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 4px #3B82F6 }`) overrides the DESIGN.md "no shadows" rule for keyboard users only.
+- Skip-to-content link jumps past the sidebar on Tab.
+- Dashboard `<main>` is `tabIndex={-1}` and focus-target of the skip link.
+- `aria-current="page"` on the active sidebar nav.
+- Every dialog exposes an `aria-label`'d close button; selects and textareas are labelled.
+- `role="alert"` / `aria-live` regions on error boundaries and streaming.
+- `@media (prefers-reduced-motion: reduce)` neutralises animations.
+- Colours meet WCAG AA contrast against the light `#FFFFFF` / `#F3F4F6` canvas.
+
+### Error boundaries and loading states
+
+- `app/global-error.tsx` — top-level failure renderer (inline styles, because it replaces the root layout).
+- `app/error.tsx` / `app/(dashboard)/error.tsx` / `app/(auth)/error.tsx` — route-segment error boundaries with retry buttons and environment-aware error-message pre-blocks.
+- `app/not-found.tsx` — 404 with a link back to the dashboard.
+- `app/loading.tsx` / `app/(dashboard)/loading.tsx` — `role="status"` skeleton placeholders.
+- `components/shared/ErrorBoundary.tsx` — React class boundary used around widget-level failures (e.g. the chat window on the playground page) so a single stream error doesn't blow up the whole route.
+- `components/shared/Skeleton.tsx` — `Skeleton`, `TextSkeleton`, `TableSkeleton` utilities used throughout the app during fetches.
+
+### Docker
+
+The multi-stage [frontend/Dockerfile](frontend/Dockerfile) produces a
+Next.js standalone image:
+
+- `deps` stage → `npm ci` against `package-lock.json`
+- `builder` stage → `next build --turbopack` with `output: 'standalone'`, `NEXT_PUBLIC_API_URL` baked in via `--build-arg`
+- `runner` stage → non-root `nextjs:nodejs` user, `HEALTHCHECK` via `wget`, `CMD ["node", "server.js"]`
+
+Build standalone locally without Docker:
+
+```bash
+cd frontend
+npm run build
+node .next/standalone/server.js
+```
+
 ## Prompt Management
 
 Prompts are versioned in `prompt_versions` with audit-friendly history: every
@@ -1223,7 +1428,7 @@ Targeted upgrades that close the gap on realistic user questions (superlatives, 
 | 10 | Python server SDK | Done |
 | 11 | Secure API key hashing + encrypted connector config | Done |
 | 12 | Repository split into `backend/` + `frontend/` workspaces | Done |
-| 13 | Multi-service `docker-compose.yml` with frontend stub | Done |
-| 14 | Full dashboard UI | Not yet implemented |
+| 13 | Multi-service `docker-compose.yml` orchestrating migrate + backend + frontend | Done |
+| 14 | Full dashboard UI (Next.js 15 operator console) | Done ([frontend/src/app/](frontend/src/app/), [frontend/src/components/](frontend/src/components/)) — signup/login, integrations, API keys, document ingest, streaming playground with citations + PDF overlay, eval, prompts, audit logs, usage; error boundaries, loading skeletons, WCAG AA focus rings, standalone Docker build |
 | 15 | Durable connector execution workers | Not yet implemented |
 | 16 | Browser/widget delivery + PDF overlay UX | Not yet implemented |

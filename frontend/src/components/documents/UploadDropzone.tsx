@@ -110,7 +110,7 @@ export function UploadDropzone({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
         className={cn(
-          'border-4 border-dashed rounded-lg p-12 flex flex-col items-center justify-center text-center transition-all duration-200',
+          'border-4 border-dashed rounded-lg p-6 sm:p-12 flex flex-col items-center justify-center text-center transition-all duration-200',
           stagedFile
             ? 'border-[#10B981] bg-[#F0FDF4]'
             : 'border-[#3B82F6]',

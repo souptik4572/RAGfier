@@ -52,8 +52,8 @@ export default function EvalRunDetailPage({ params }: EvalRunDetailPageProps) {
       />
 
       {run && (
-        <div className="bg-white rounded-lg p-6 mb-6">
-          <div className="flex items-center justify-between mb-5">
+        <div className="bg-white rounded-lg p-4 sm:p-6 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-5">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
                 Status
@@ -76,7 +76,7 @@ export default function EvalRunDetailPage({ params }: EvalRunDetailPageProps) {
                 )}
               </p>
             </div>
-            <div className="text-right">
+            <div className="sm:text-right">
               <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
                 Samples
               </p>
@@ -91,7 +91,7 @@ export default function EvalRunDetailPage({ params }: EvalRunDetailPageProps) {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 sm:gap-x-6 gap-y-4">
             <ScoreBar label="Faithfulness" value={run.scores.faithfulness_avg} />
             <ScoreBar label="Answer Relevancy" value={run.scores.answer_relevancy_avg} />
             <ScoreBar label="Context Precision" value={run.scores.context_precision_avg} />

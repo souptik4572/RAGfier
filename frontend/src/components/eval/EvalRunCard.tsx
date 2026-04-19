@@ -34,32 +34,32 @@ export function EvalRunCard({ run }: EvalRunCardProps) {
       href={`/eval/${run.id}`}
       className="block bg-white rounded-lg overflow-hidden transition-all duration-200 hover:scale-[1.01]"
     >
-      <div className={cn('px-5 py-4 flex items-center justify-between', headerStyle)}>
-        <div className="flex items-center gap-3">
-          {headerIcon}
-          <div>
-            <p className="font-mono text-sm font-bold">
+      <div className={cn('px-4 sm:px-5 py-4 flex items-center justify-between gap-3', headerStyle)}>
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="shrink-0">{headerIcon}</span>
+          <div className="min-w-0">
+            <p className="font-mono text-sm font-bold truncate">
               {run.id.slice(0, 8)}
             </p>
-            <p className="text-xs opacity-90 mt-0.5">
+            <p className="text-xs opacity-90 mt-0.5 truncate">
               {run.dataset_version || 'unversioned'} · {run.trigger}
             </p>
           </div>
         </div>
-        <div className="text-right">
+        <div className="text-right shrink-0">
           <p className="text-xs font-semibold uppercase tracking-wider">
             {run.status}
           </p>
           {run.created_at && (
-            <p className="text-xs opacity-80 mt-0.5">
+            <p className="hidden sm:block text-xs opacity-80 mt-0.5">
               {formatDate(run.created_at)}
             </p>
           )}
         </div>
       </div>
 
-      <div className="p-5 space-y-3">
-        <div className="flex items-center gap-4 text-xs text-gray-500">
+      <div className="p-4 sm:p-5 space-y-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
           <span>
             <span className="font-semibold text-[#111827]">
               {run.total_samples}

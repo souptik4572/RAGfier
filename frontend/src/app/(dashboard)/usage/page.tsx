@@ -145,11 +145,11 @@ export default function UsagePage() {
         subtitle="Requests, tokens, and latency across your tenant"
       />
 
-      <div className="bg-[#F3F4F6] rounded-lg p-4 mb-6 flex items-center gap-3">
+      <div className="bg-[#F3F4F6] rounded-lg p-3 sm:p-4 mb-6 flex flex-wrap items-center gap-2 sm:gap-3">
         <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
           Window
         </span>
-        <div className="w-48">
+        <div className="flex-1 sm:flex-none sm:w-48 min-w-0">
           <Select
             value={String(days)}
             onValueChange={(v) => setDays(Number(v))}
@@ -222,8 +222,8 @@ export default function UsagePage() {
               subtitle="No requests recorded in this window yet."
             />
           ) : (
-            <div className="bg-white rounded-lg overflow-hidden">
-              <table className="w-full border-collapse">
+            <div className="bg-white rounded-lg overflow-x-auto">
+              <table className="w-full min-w-[640px] border-collapse">
                 <thead>
                   <tr className="bg-[#111827] text-white">
                     <th className="text-left text-xs font-semibold uppercase tracking-wider px-4 py-3">

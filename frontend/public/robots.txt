@@ -1,0 +1,3 @@
+# RAGfier dashboard — operator-facing SaaS; no indexing.
+User-agent: *
+Disallow: /

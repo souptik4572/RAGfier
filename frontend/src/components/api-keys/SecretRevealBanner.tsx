@@ -27,10 +27,10 @@ export function SecretRevealBanner({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-xl p-0 overflow-hidden"
+        className="max-w-xl p-0"
         hideDefaultClose
       >
-        <div className="bg-[#F59E0B] text-white p-6 relative pr-14">
+        <div className="bg-[#F59E0B] text-white p-5 sm:p-6 relative pr-14">
           <div className="flex items-start gap-4">
             <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center shrink-0">
               <AlertTriangle className="h-5 w-5" />
@@ -54,7 +54,7 @@ export function SecretRevealBanner({
           </DialogClose>
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="p-5 sm:p-6 space-y-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">
               Key prefix

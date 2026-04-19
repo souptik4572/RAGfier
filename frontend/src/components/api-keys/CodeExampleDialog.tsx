@@ -116,8 +116,8 @@ export function CodeExampleDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl p-0 overflow-hidden" hideDefaultClose>
-        <DialogHeader className="bg-[#111827] text-white p-6 rounded-t-lg relative pr-14">
+      <DialogContent className="max-w-3xl p-0" hideDefaultClose>
+        <DialogHeader className="bg-[#111827] text-white p-5 sm:p-6 rounded-t-lg relative pr-14">
           <DialogTitle className="text-white">
             How to use this API key
           </DialogTitle>
@@ -143,15 +143,15 @@ export function CodeExampleDialog({
           </DialogClose>
         </DialogHeader>
 
-        <div className="p-6 pt-5">
+        <div className="p-4 sm:p-6 pt-5">
           {/* Tabs */}
-          <div className="flex items-center gap-2 mb-4 border-b-2 border-[#E5E7EB]">
+          <div className="flex items-center gap-1 sm:gap-2 mb-4 border-b-2 border-[#E5E7EB] overflow-x-auto">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
                 className={cn(
-                  'flex items-center gap-2 px-4 py-2.5 text-sm font-semibold transition-colors duration-150 border-b-2 -mb-0.5',
+                  'flex items-center gap-2 px-3 sm:px-4 py-2.5 text-sm font-semibold transition-colors duration-150 border-b-2 -mb-0.5 shrink-0',
                   tab === id
                     ? 'text-[#3B82F6] border-[#3B82F6]'
                     : 'text-gray-400 border-transparent hover:text-[#111827]'

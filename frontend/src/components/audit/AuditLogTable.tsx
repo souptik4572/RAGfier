@@ -48,8 +48,8 @@ export function AuditLogTable({ logs }: AuditLogTableProps) {
   };
 
   return (
-    <div className="bg-white rounded-lg overflow-hidden">
-      <table className="w-full border-collapse">
+    <div className="bg-white rounded-lg overflow-x-auto">
+      <table className="w-full min-w-[720px] border-collapse">
         <thead>
           <tr className="bg-[#111827] text-white">
             <th className="w-8 px-3 py-3" />

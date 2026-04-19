@@ -33,14 +33,14 @@ export function ConfirmDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="p-0 overflow-hidden">
-        <DialogHeader className="bg-[#111827] text-white p-6 rounded-t-lg">
+        <DialogHeader className="bg-[#111827] text-white p-5 sm:p-6 rounded-t-lg">
           <DialogTitle className="text-white">{title}</DialogTitle>
           <DialogDescription className="text-gray-400 mt-1">
             {description}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center gap-3 p-6">
+        <div className="flex items-center gap-3 p-5 sm:p-6">
           <Button
             variant="secondary"
             onClick={() => onOpenChange(false)}

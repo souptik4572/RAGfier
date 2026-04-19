@@ -48,15 +48,15 @@ export function PromptDetail({ prompt }: PromptDetailProps) {
   const metaEntries = Object.entries(prompt.metadata ?? {});
 
   return (
-    <div className="bg-white rounded-lg p-6 space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold text-[#111827]">{prompt.name}</h2>
+    <div className="bg-white rounded-lg p-4 sm:p-6 space-y-5 sm:space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-[#111827] break-all">{prompt.name}</h2>
           <p className="text-sm text-gray-500 font-mono mt-1">
             v{prompt.version} · {formatTimestamp(prompt.created_at)}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           {isGlobal && (
             <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider px-2 py-1 rounded-md bg-[#F3F4F6] text-gray-600">
               <Globe className="h-3 w-3" />

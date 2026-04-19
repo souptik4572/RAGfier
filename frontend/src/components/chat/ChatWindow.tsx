@@ -84,11 +84,11 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
   })();
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-220px)] min-h-[500px]">
-      {/* Chat area — left 2/3 */}
-      <div className="flex-1 basis-2/3 bg-white rounded-lg flex flex-col overflow-hidden">
+    <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-220px)] min-h-[500px]">
+      {/* Chat area — left 2/3 on desktop, full on mobile */}
+      <div className="flex-1 lg:basis-2/3 bg-white rounded-lg flex flex-col overflow-hidden min-h-0">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
           {messages.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-center text-gray-400">
               <p className="text-lg font-semibold text-[#111827] mb-1">Ask anything</p>
@@ -102,7 +102,7 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
         </div>
 
         {/* Input bar */}
-        <div className="bg-[#F3F4F6] border-t-2 border-[#E5E7EB] p-4">
+        <div className="bg-[#F3F4F6] border-t-2 border-[#E5E7EB] p-3 sm:p-4">
           {/* Controls row */}
           <div className="flex items-center gap-4 mb-3">
             <label className="flex items-center gap-1.5 text-xs font-semibold text-[#111827]">
@@ -110,7 +110,8 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
               <select
                 value={matchCount}
                 onChange={(e) => setMatchCount(Number(e.target.value))}
-                className="ml-1 bg-white border-0 rounded-md text-xs px-2 py-1 text-[#111827] focus:outline-none focus:border-2 focus:border-[#3B82F6]"
+                className="ml-1 bg-white border-0 rounded-md text-xs px-2 py-1 text-[#111827] focus:outline-none focus:border-2 focus:border-[#3B82F6] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
+                aria-label="Number of results to retrieve"
               >
                 {[3, 5, 10, 20].map((n) => (
                   <option key={n} value={n}>
@@ -133,7 +134,7 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
             {messages.length > 0 && (
               <button
                 onClick={clearChat}
-                className="ml-auto text-xs text-gray-400 hover:text-[#111827] transition-colors duration-150"
+                className="ml-auto text-xs text-gray-400 hover:text-[#111827] transition-colors duration-150 rounded-md px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
               >
                 Clear chat
               </button>
@@ -153,27 +154,31 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
               className={cn(
                 'flex-1 resize-none rounded-md bg-[#F3F4F6] border-0 px-4 py-3 text-sm text-[#111827] placeholder:text-gray-400 transition-all duration-150',
                 'focus:outline-none focus:bg-white focus:border-2 focus:border-[#3B82F6]',
+                'focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]',
                 'disabled:opacity-60 disabled:cursor-not-allowed'
               )}
+              aria-label="Query input"
             />
             <button
               onClick={handleSend}
               disabled={!input.trim() || isAnyStreaming}
+              aria-label="Send message"
               className={cn(
-                'bg-[#3B82F6] text-white h-14 rounded-md hover:bg-[#2563EB] hover:scale-105 transition-all duration-200 font-semibold px-6',
+                'bg-[#3B82F6] text-white h-12 sm:h-14 rounded-md hover:bg-[#2563EB] hover:scale-105 transition-all duration-200 font-semibold px-4 sm:px-6',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]',
                 'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:bg-[#3B82F6]',
                 'flex items-center gap-2 shrink-0'
               )}
             >
               <Send className="h-4 w-4" />
-              Send
+              <span className="hidden sm:inline">Send</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Citation sidebar — right 1/3 */}
-      <div className="basis-1/3 bg-[#F3F4F6] rounded-lg p-4 overflow-y-auto flex flex-col gap-3">
+      {/* Citation sidebar — right 1/3 on desktop, below on mobile */}
+      <div className="lg:basis-1/3 lg:max-h-none max-h-60 bg-[#F3F4F6] rounded-lg p-4 overflow-y-auto flex flex-col gap-3 shrink-0 lg:shrink">
         <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">
           Sources
         </p>

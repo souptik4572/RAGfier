@@ -66,23 +66,23 @@ export default function IntegrationDetailPage({
         subtitle="Integration details and configuration"
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Details Card */}
-        <div className="lg:col-span-2 bg-white rounded-lg p-8">
-          <h2 className="text-lg font-bold text-[#111827] mb-6">Details</h2>
-          <dl className="space-y-5">
-            <div className="flex items-center gap-4">
-              <dt className="w-32 text-sm font-semibold text-gray-500 flex items-center gap-2">
+        <div className="lg:col-span-2 bg-white rounded-lg p-5 sm:p-8">
+          <h2 className="text-lg font-bold text-[#111827] mb-5 sm:mb-6">Details</h2>
+          <dl className="space-y-4 sm:space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+              <dt className="sm:w-32 text-xs sm:text-sm font-semibold text-gray-500 flex items-center gap-2 shrink-0">
                 <Tag className="h-4 w-4" />
                 Name
               </dt>
-              <dd className="text-sm font-medium text-[#111827]">
+              <dd className="text-sm font-medium text-[#111827] wrap-break-word">
                 {integration.name}
               </dd>
             </div>
 
-            <div className="flex items-center gap-4">
-              <dt className="w-32 text-sm font-semibold text-gray-500">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+              <dt className="sm:w-32 text-xs sm:text-sm font-semibold text-gray-500 shrink-0">
                 Environment
               </dt>
               <dd>
@@ -95,8 +95,8 @@ export default function IntegrationDetailPage({
             </div>
 
             {integration.is_default && (
-              <div className="flex items-center gap-4">
-                <dt className="w-32 text-sm font-semibold text-gray-500">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+                <dt className="sm:w-32 text-xs sm:text-sm font-semibold text-gray-500 shrink-0">
                   Type
                 </dt>
                 <dd>
@@ -107,18 +107,18 @@ export default function IntegrationDetailPage({
               </div>
             )}
 
-            <div className="flex items-center gap-4">
-              <dt className="w-32 text-sm font-semibold text-gray-500 flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+              <dt className="sm:w-32 text-xs sm:text-sm font-semibold text-gray-500 flex items-center gap-2 shrink-0">
                 <Sparkles className="h-4 w-4" />
                 Prompt
               </dt>
-              <dd className="text-sm font-mono text-[#111827]">
+              <dd className="text-sm font-mono text-[#111827] break-all">
                 {integration.prompt_name ?? '—'}
               </dd>
             </div>
 
-            <div className="flex items-center gap-4">
-              <dt className="w-32 text-sm font-semibold text-gray-500 flex items-center gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+              <dt className="sm:w-32 text-xs sm:text-sm font-semibold text-gray-500 flex items-center gap-2 shrink-0">
                 <Calendar className="h-4 w-4" />
                 Created
               </dt>
@@ -127,8 +127,8 @@ export default function IntegrationDetailPage({
               </dd>
             </div>
 
-            <div className="flex items-center gap-4">
-              <dt className="w-32 text-sm font-semibold text-gray-500">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+              <dt className="sm:w-32 text-xs sm:text-sm font-semibold text-gray-500 shrink-0">
                 Updated
               </dt>
               <dd className="text-sm text-gray-500">
@@ -137,8 +137,8 @@ export default function IntegrationDetailPage({
             </div>
 
             {integration.metadata && Object.keys(integration.metadata).length > 0 && (
-              <div className="flex gap-4">
-                <dt className="w-32 text-sm font-semibold text-gray-500">
+              <div className="flex flex-col sm:flex-row gap-1 sm:gap-4">
+                <dt className="sm:w-32 text-xs sm:text-sm font-semibold text-gray-500 shrink-0">
                   Metadata
                 </dt>
                 <dd className="text-sm text-gray-500 flex-1 font-mono break-all">
@@ -150,9 +150,9 @@ export default function IntegrationDetailPage({
         </div>
 
         {/* Actions Card */}
-        <div className="bg-white rounded-lg p-8">
-          <h2 className="text-lg font-bold text-[#111827] mb-6">Actions</h2>
-          <div className="flex flex-col gap-4">
+        <div className="bg-white rounded-lg p-5 sm:p-8">
+          <h2 className="text-lg font-bold text-[#111827] mb-5 sm:mb-6">Actions</h2>
+          <div className="flex flex-col gap-3 sm:gap-4">
             <Link
               href={`/integrations/${integration.id}/documents`}
               className="block"

@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getIntegration } from '@/lib/api/integrations';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { ChatWindow } from '@/components/chat/ChatWindow';
+import { ErrorBoundary } from '@/components/shared/ErrorBoundary';
 
 interface PlaygroundPageProps {
   params: Promise<{ id: string }>;
@@ -24,7 +25,9 @@ export default function PlaygroundPage({ params }: PlaygroundPageProps) {
         title={integration?.name ?? 'Playground'}
         subtitle="Test your RAG pipeline with queries"
       />
-      <ChatWindow integrationId={id} />
+      <ErrorBoundary label="The chat session ran into an error">
+        <ChatWindow integrationId={id} />
+      </ErrorBoundary>
     </div>
   );
 }

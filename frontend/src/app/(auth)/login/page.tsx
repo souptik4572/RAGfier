@@ -1,8 +1,14 @@
+import type { Metadata } from 'next';
 import { LoginForm } from '@/components/auth/LoginForm';
+
+export const metadata: Metadata = {
+  title: 'Sign in',
+  description: 'Sign in to your RAGfier tenant.',
+};
 
 export default function LoginPage() {
   return (
-    <div className="flex h-screen w-full">
+    <div className="flex min-h-screen w-full">
       {/* Left decorative panel */}
       <div className="hidden lg:flex lg:w-1/2 bg-[#3B82F6] relative overflow-hidden flex-col items-center justify-center">
         {/* Decorative geometric circles */}
@@ -23,18 +29,18 @@ export default function LoginPage() {
       </div>
 
       {/* Right login form */}
-      <div className="flex flex-1 items-center justify-center px-8 bg-white">
+      <div className="flex flex-1 items-center justify-center px-5 sm:px-8 bg-white overflow-y-auto py-8">
         <div className="w-full max-w-md">
-          <div className="mb-8">
+          <div className="mb-6 sm:mb-8">
             <div className="lg:hidden mb-6">
-              <span className="text-3xl font-extrabold text-[#111827]">
+              <span className="text-2xl sm:text-3xl font-extrabold text-[#111827]">
                 RAGfier<span className="text-[#3B82F6]">.</span>
               </span>
             </div>
-            <h2 className="text-3xl font-extrabold text-[#111827] tracking-tight">
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-[#111827] tracking-tight">
               Welcome back
             </h2>
-            <p className="mt-2 text-gray-500 font-medium">
+            <p className="mt-2 text-sm sm:text-base text-gray-500 font-medium">
               Sign in to your account to continue
             </p>
           </div>

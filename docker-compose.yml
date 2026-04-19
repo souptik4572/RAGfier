@@ -3,9 +3,9 @@
 # Frontend: placeholder — uncomment and fill in once implemented.
 #
 # Usage:
-#   docker compose up              # start everything
+#   docker compose up              # start everything (migrate, backend, frontend)
 #   docker compose up backend      # start backend only
-#   docker compose up frontend     # start frontend only (once implemented)
+#   docker compose up frontend     # start frontend only (requires backend running)
 
 services:
   # ── Database migrations ──────────────────────────────────────────────────────
@@ -44,16 +44,30 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
-  # ── Frontend (placeholder — implement when ready) ─────────────────────────────
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   container_name: ragfier-frontend
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     - NEXT_PUBLIC_API_URL=http://backend:8000
-  #   depends_on:
-  #     - backend
-  #   restart: unless-stopped
+  # ── Frontend (Next.js 15 dashboard) ───────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # NEXT_PUBLIC_* env vars are baked into the client bundle at build time.
+      # Override via `docker compose build --build-arg NEXT_PUBLIC_API_URL=...`
+      # when deploying behind a public gateway.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: ragfier-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # Consumed by SSR/route handlers. The browser bundle uses the build-arg
+      # value above, which must point at a host the browser can reach.
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NODE_ENV=production
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

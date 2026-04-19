@@ -60,8 +60,8 @@ export default function AuditLogsPage() {
         subtitle="Track all platform activity across your tenant"
       />
 
-      <div className="bg-[#F3F4F6] rounded-lg p-4 mb-6 flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-60">
+      <div className="bg-[#F3F4F6] rounded-lg p-3 sm:p-4 mb-6 flex flex-wrap items-center gap-2 sm:gap-3">
+        <div className="relative flex-1 min-w-full sm:min-w-60">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
           <Input
             value={actionQuery}
@@ -70,7 +70,7 @@ export default function AuditLogsPage() {
             className="pl-9 bg-white"
           />
         </div>
-        <div className="w-48">
+        <div className="flex-1 sm:flex-none sm:w-48 min-w-0">
           <Select
             value={actorFilter}
             onValueChange={setActorFilter}
@@ -79,7 +79,7 @@ export default function AuditLogsPage() {
             className="bg-white"
           />
         </div>
-        <div className="w-40">
+        <div className="flex-1 sm:flex-none sm:w-40 min-w-0">
           <Select
             value={String(pageSize)}
             onValueChange={(v) => setPageSize(Number(v))}
