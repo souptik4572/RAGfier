@@ -7,6 +7,7 @@ export interface Integration {
   environment: 'production' | 'staging' | 'development';
   metadata?: Record<string, unknown>;
   is_default?: boolean;
+  prompt_name: string;
   created_at: string;
   updated_at: string;
 }
@@ -25,6 +26,7 @@ export interface UpdateIntegrationPayload {
   environment?: Integration['environment'];
   metadata?: Record<string, unknown>;
   is_default?: boolean;
+  prompt_name?: string;
 }
 
 export interface DeleteIntegrationResponse {

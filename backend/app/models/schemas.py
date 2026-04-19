@@ -154,12 +154,13 @@ class AuthTokenResponse(BaseModel):
 
 class PromptSummary(BaseModel):
     message: str = ""
-    id: UUID
+    id: Optional[UUID] = None
     name: str
     version: int
     is_active: bool
     tenant_id: Optional[UUID] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    source: str = "database"
     created_at: Optional[datetime] = None
 
 
@@ -267,6 +268,7 @@ class IntegrationCreateRequest(BaseModel):
     name: str = Field(..., min_length=1)
     environment: str = Field(default="production", min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    prompt_name: Optional[str] = Field(default=None, min_length=1)
 
 
 class IntegrationSummary(BaseModel):
@@ -276,6 +278,7 @@ class IntegrationSummary(BaseModel):
     name: str
     environment: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    prompt_name: str = "rag_generation_v1"
     created_at: Optional[datetime] = None
 
 
@@ -289,6 +292,7 @@ class IntegrationUpdateRequest(BaseModel):
     environment: Optional[str] = Field(default=None, min_length=1)
     metadata: Optional[dict[str, Any]] = None
     is_default: Optional[bool] = None
+    prompt_name: Optional[str] = Field(default=None, min_length=1)
 
 
 class IntegrationDeleteResponse(BaseModel):

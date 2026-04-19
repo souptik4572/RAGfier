@@ -299,4 +299,19 @@ def test_prompts_list_and_create_roundtrip(client: TestClient) -> None:
     list_body = list_resp.json()
     assert list_body["message"] == "Prompts retrieved successfully"
     prompts = list_body["prompts"]
-    assert any(p["name"] == "rag_generation_v1" for p in prompts)
+    # DB row shadows the YAML file of the same name.
+    rag_entries = [p for p in prompts if p["name"] == "rag_generation_v1"]
+    assert len(rag_entries) == 1
+    assert rag_entries[0]["source"] == "database"
+
+
+def test_prompts_list_includes_yaml_defaults_when_no_db_row(
+    client: TestClient,
+) -> None:
+    list_resp = client.get("/prompts")
+    assert list_resp.status_code == 200
+    prompts = list_resp.json()["prompts"]
+    rag_entries = [p for p in prompts if p["name"] == "rag_generation_v1"]
+    assert len(rag_entries) == 1
+    assert rag_entries[0]["source"] == "yaml"
+    assert rag_entries[0]["id"] is None

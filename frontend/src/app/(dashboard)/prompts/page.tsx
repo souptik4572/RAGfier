@@ -9,7 +9,7 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { LoadingBlock } from '@/components/shared/LoadingBlock';
 import { Button } from '@/components/ui/button';
-import { PromptList } from '@/components/prompts/PromptList';
+import { PromptList, promptKey } from '@/components/prompts/PromptList';
 import { PromptDetail } from '@/components/prompts/PromptDetail';
 import { CreatePromptDialog } from '@/components/prompts/CreatePromptDialog';
 
@@ -32,17 +32,18 @@ export default function PromptsPage() {
 
   useEffect(() => {
     if (!selectedId && sortedPrompts.length > 0) {
-      setSelectedId(sortedPrompts[0].id);
+      setSelectedId(promptKey(sortedPrompts[0]));
     } else if (
       selectedId &&
       sortedPrompts.length > 0 &&
-      !sortedPrompts.some((p) => p.id === selectedId)
+      !sortedPrompts.some((p) => promptKey(p) === selectedId)
     ) {
-      setSelectedId(sortedPrompts[0].id);
+      setSelectedId(promptKey(sortedPrompts[0]));
     }
   }, [sortedPrompts, selectedId]);
 
-  const selected = sortedPrompts.find((p) => p.id === selectedId) ?? null;
+  const selected =
+    sortedPrompts.find((p) => promptKey(p) === selectedId) ?? null;
 
   return (
     <div>

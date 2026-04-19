@@ -4,10 +4,14 @@ import { Globe, CheckCircle2 } from 'lucide-react';
 import type { PromptSummary } from '@/lib/api/prompts';
 import { cn } from '@/lib/utils';
 
+export function promptKey(p: PromptSummary): string {
+  return p.id ?? `yaml:${p.name}:${p.version}`;
+}
+
 interface PromptListProps {
   prompts: PromptSummary[];
   selectedId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (key: string) => void;
 }
 
 function formatDate(ts?: string | null): string {
@@ -40,12 +44,13 @@ export function PromptList({ prompts, selectedId, onSelect }: PromptListProps) {
           </p>
           <div className="space-y-1.5">
             {grouped[name].map((p) => {
-              const isSelected = p.id === selectedId;
+              const key = promptKey(p);
+              const isSelected = key === selectedId;
               const isGlobal = !p.tenant_id;
               return (
                 <button
-                  key={p.id}
-                  onClick={() => onSelect(p.id)}
+                  key={key}
+                  onClick={() => onSelect(key)}
                   className={cn(
                     'w-full text-left rounded-lg p-3 transition-colors duration-150',
                     isSelected

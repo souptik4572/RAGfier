@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from app.config import get_settings
 from app.utils.api_errors import raise_api_error
 from app.utils.logger import get_logger
 
@@ -35,6 +36,7 @@ def get_or_create_default_integration(client: Any, tenant_id: str) -> dict:
                 "environment": _DEFAULT_INTEGRATION_ENV,
                 "metadata": {},
                 "is_default": True,
+                "prompt_name": get_settings().default_prompt_name,
             }
         )
         .execute()

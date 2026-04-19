@@ -1,12 +1,13 @@
 import { apiClient } from './client';
 
 export interface PromptSummary {
-  id: string;
+  id: string | null;
   name: string;
   version: number;
   is_active: boolean;
   tenant_id?: string | null;
   metadata: Record<string, unknown>;
+  source: 'database' | 'yaml';
   created_at?: string | null;
   system_prompt?: string;
   user_prompt_template?: string;

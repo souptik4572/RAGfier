@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { LoadingBlock } from '@/components/shared/LoadingBlock';
 import { formatDate } from '@/lib/utils';
-import { FileText, Play, Calendar, Tag, Pencil, Trash2 } from 'lucide-react';
+import { FileText, Play, Calendar, Tag, Pencil, Trash2, Sparkles } from 'lucide-react';
 import { EditIntegrationDialog } from '@/components/integrations/EditIntegrationDialog';
 import { DeleteIntegrationDialog } from '@/components/integrations/DeleteIntegrationDialog';
 
@@ -106,6 +106,16 @@ export default function IntegrationDetailPage({
                 </dd>
               </div>
             )}
+
+            <div className="flex items-center gap-4">
+              <dt className="w-32 text-sm font-semibold text-gray-500 flex items-center gap-2">
+                <Sparkles className="h-4 w-4" />
+                Prompt
+              </dt>
+              <dd className="text-sm font-mono text-[#111827]">
+                {integration.prompt_name ?? '—'}
+              </dd>
+            </div>
 
             <div className="flex items-center gap-4">
               <dt className="w-32 text-sm font-semibold text-gray-500 flex items-center gap-2">

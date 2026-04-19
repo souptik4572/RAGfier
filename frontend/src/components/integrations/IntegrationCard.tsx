@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { FileText, Play } from 'lucide-react';
+import { FileText, Play, Sparkles } from 'lucide-react';
 import { type Integration } from '@/lib/api/integrations';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -51,6 +51,12 @@ export function IntegrationCard({ integration }: IntegrationCardProps) {
         <p className="text-sm text-gray-500">
           Created {formatDate(integration.created_at)}
         </p>
+        {integration.prompt_name && (
+          <p className="mt-1 text-sm text-gray-500 flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5" />
+            <span className="font-mono truncate">{integration.prompt_name}</span>
+          </p>
+        )}
         {integration.metadata && Object.keys(integration.metadata).length > 0 && (
           <p className="mt-1 text-sm text-gray-400 truncate font-mono">
             {JSON.stringify(integration.metadata)}

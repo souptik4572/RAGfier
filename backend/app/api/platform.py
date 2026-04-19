@@ -43,6 +43,8 @@ async def create_integration(
     auth: AuthContext = Depends(get_auth_context),
 ) -> IntegrationSummary:
     client = get_service_client()
+    settings = get_settings()
+    prompt_name = payload.prompt_name or settings.default_prompt_name
     rows = (
         client.table("integrations")
         .insert(
@@ -51,6 +53,7 @@ async def create_integration(
                 "name": payload.name,
                 "environment": payload.environment,
                 "metadata": payload.metadata,
+                "prompt_name": prompt_name,
             }
         )
         .execute()
@@ -77,6 +80,7 @@ async def create_integration(
         name=row["name"],
         environment=row["environment"],
         metadata=row.get("metadata") or {},
+        prompt_name=row.get("prompt_name") or settings.default_prompt_name,
         created_at=row.get("created_at"),
     )
 
@@ -86,6 +90,7 @@ async def list_integrations(
     auth: AuthContext = Depends(get_auth_context),
 ) -> IntegrationListResponse:
     client = get_service_client()
+    settings = get_settings()
     rows = client.table("integrations").select("*").eq("tenant_id", auth.tenant_id).execute().data or []
     return build_response(
         IntegrationListResponse,
@@ -98,6 +103,7 @@ async def list_integrations(
                 name=row["name"],
                 environment=row.get("environment") or "production",
                 metadata=row.get("metadata") or {},
+                prompt_name=row.get("prompt_name") or settings.default_prompt_name,
                 created_at=row.get("created_at"),
             ).model_dump(mode="json")
             for row in rows
@@ -165,6 +171,7 @@ async def get_integration(
     if not rows:
         raise_api_error(404, "platform.integration_not_found")
     row = rows[0]
+    settings = get_settings()
     return build_response(
         IntegrationSummary,
         "platform.integration_fetched",
@@ -173,6 +180,7 @@ async def get_integration(
         name=row["name"],
         environment=row.get("environment") or "production",
         metadata=row.get("metadata") or {},
+        prompt_name=row.get("prompt_name") or settings.default_prompt_name,
         created_at=row.get("created_at"),
     )
 
@@ -346,6 +354,8 @@ async def update_integration(
         updates["environment"] = payload.environment
     if payload.metadata is not None:
         updates["metadata"] = payload.metadata
+    if payload.prompt_name is not None:
+        updates["prompt_name"] = payload.prompt_name
     if payload.is_default is True:
         # Clear any existing default to avoid violating the partial unique
         # index on (tenant_id) WHERE is_default = TRUE.
@@ -371,6 +381,7 @@ async def update_integration(
         or []
     )
     row = refreshed[0] if refreshed else existing[0]
+    settings = get_settings()
 
     write_audit_log(
         client,
@@ -390,6 +401,7 @@ async def update_integration(
         name=row["name"],
         environment=row.get("environment") or "production",
         metadata=row.get("metadata") or {},
+        prompt_name=row.get("prompt_name") or settings.default_prompt_name,
         created_at=row.get("created_at"),
     )
 

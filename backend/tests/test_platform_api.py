@@ -526,6 +526,63 @@ def test_delete_integration_returns_404_for_unknown_id(client: TestClient) -> No
     assert resp.status_code == 404
 
 
+def test_create_integration_defaults_prompt_name(client: TestClient) -> None:
+    resp = client.post(
+        "/platform/integrations",
+        json={"name": "Default Prompt Integration", "environment": "production"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["prompt_name"] == "rag_generation_v1"
+
+
+def test_create_integration_accepts_explicit_prompt_name(client: TestClient) -> None:
+    resp = client.post(
+        "/platform/integrations",
+        json={
+            "name": "Custom Prompt Integration",
+            "environment": "production",
+            "prompt_name": "custom_prompt_v2",
+        },
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["prompt_name"] == "custom_prompt_v2"
+
+
+def test_update_integration_can_change_prompt_name(client: TestClient) -> None:
+    create_resp = client.post(
+        "/platform/integrations",
+        json={"name": "Switchable", "environment": "production"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    integration_id = create_resp.json()["id"]
+
+    patch_resp = client.patch(
+        f"/platform/integrations/{integration_id}",
+        json={"prompt_name": "support_answers_v3"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["prompt_name"] == "support_answers_v3"
+
+
+def test_list_integrations_surfaces_prompt_name(client: TestClient) -> None:
+    client.post(
+        "/platform/integrations",
+        json={"name": "Listed", "environment": "production", "prompt_name": "x_v1"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    list_resp = client.get(
+        "/platform/integrations",
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    integrations = list_resp.json()["integrations"]
+    assert any(i.get("prompt_name") == "x_v1" for i in integrations)
+
+
 def test_platform_usage_aggregates_request_logs_for_tenant(
     client: TestClient,
     fake_db: FakeSupabaseClient,

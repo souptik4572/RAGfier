@@ -2,14 +2,17 @@
 
 import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import {
   createIntegrationSchema,
 } from '@/lib/schemas/integration.schema';
 import { createIntegration } from '@/lib/api/integrations';
+import { listPrompts } from '@/lib/api/prompts';
 import { getErrorMessage } from '@/lib/utils';
+
+const DEFAULT_PROMPT_NAME = 'rag_generation_v1';
 
 // RHF works with raw input types (pre-transform); output goes to createIntegration
 type FormInput = z.input<typeof createIntegrationSchema>;
@@ -36,6 +39,31 @@ export function CreateIntegrationDialog({
   onOpenChange,
 }: CreateIntegrationDialogProps) {
   const queryClient = useQueryClient();
+  const { data: prompts = [] } = useQuery({
+    queryKey: ['prompts'],
+    queryFn: listPrompts,
+    enabled: open,
+  });
+
+  const promptOptions = (() => {
+    const seen = new Set<string>();
+    const options: { value: string; label: string }[] = [];
+    for (const p of prompts) {
+      if (seen.has(p.name)) continue;
+      seen.add(p.name);
+      options.push({
+        value: p.name,
+        label: p.source === 'yaml' ? `${p.name} (default)` : p.name,
+      });
+    }
+    if (!seen.has(DEFAULT_PROMPT_NAME)) {
+      options.unshift({
+        value: DEFAULT_PROMPT_NAME,
+        label: `${DEFAULT_PROMPT_NAME} (default)`,
+      });
+    }
+    return options;
+  })();
 
   const {
     register,
@@ -51,6 +79,7 @@ export function CreateIntegrationDialog({
     >,
     defaultValues: {
       environment: 'development',
+      prompt_name: DEFAULT_PROMPT_NAME,
       metadata: '',
     },
   });
@@ -115,6 +144,21 @@ export function CreateIntegrationDialog({
             {errors.environment && (
               <p className="mt-1 text-sm text-red-500">
                 {errors.environment.message}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <Label htmlFor="prompt_name" required>Prompt</Label>
+            <Select
+              defaultValue={DEFAULT_PROMPT_NAME}
+              onValueChange={(val) => setValue('prompt_name', val)}
+              options={promptOptions}
+              placeholder="Select prompt"
+            />
+            {errors.prompt_name && (
+              <p className="mt-1 text-sm text-red-500">
+                {errors.prompt_name.message}
               </p>
             )}
           </div>
