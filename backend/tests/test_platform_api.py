@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
+from app.api import _query_shared as query_shared_module
 from app.api import platform as platform_module
 from app.api import public_v1 as public_v1_module
 from app.api.auth import AuthContext, get_auth_context
@@ -21,11 +22,12 @@ TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
 
 
-def _doc(job_id: str, knowledge_base_id: str) -> dict[str, Any]:
+def _doc(job_id: str, knowledge_base_id: str, integration_id: str | None = None) -> dict[str, Any]:
     return {
         "id": str(uuid.uuid4()),
         "tenant_id": TENANT_ID,
         "job_id": job_id,
+        "integration_id": integration_id,
         "knowledge_base_id": knowledge_base_id,
         "content": "The liability cap shall not exceed $1,000,000 in aggregate.",
         "status": "active",
@@ -58,8 +60,8 @@ def fake_db() -> FakeSupabaseClient:
             for row in db.rows("documents")
             if row["tenant_id"] == params["filter_tenant_id"]
             and (
-                not params.get("filter_knowledge_base_ids")
-                or row.get("knowledge_base_id") in params["filter_knowledge_base_ids"]
+                not params.get("filter_integration_id")
+                or row.get("integration_id") == params["filter_integration_id"]
             )
         ]
         return [
@@ -90,15 +92,21 @@ def client(monkeypatch, fake_db: FakeSupabaseClient) -> TestClient:
     monkeypatch.setattr(retriever_dense, "get_service_client", lambda: fake_db)
     monkeypatch.setattr(retriever_sparse, "get_service_client", lambda: fake_db)
 
+    removed_paths: list[list[str]] = []
+
     class _FakeBucket:
         def upload(self, **_: Any) -> None:
             return None
+
+        def remove(self, paths: List[str]) -> None:
+            removed_paths.append(list(paths))
 
     class _FakeStorage:
         def from_(self, _name: str) -> _FakeBucket:
             return _FakeBucket()
 
     fake_db.storage = _FakeStorage()  # type: ignore[attr-defined]
+    fake_db.removed_paths = removed_paths  # type: ignore[attr-defined]
 
     async def _noop_pipeline(**_: Any) -> None:
         return None
@@ -118,7 +126,7 @@ def client(monkeypatch, fake_db: FakeSupabaseClient) -> TestClient:
         response_text="The liability cap is $1,000,000 [SOURCE_1]."
     )
     fake_openai.chat.completions.stream_tokens = ["The", " cap", " is", " $1M", " [SOURCE_1]"]
-    monkeypatch.setattr(public_v1_module, "Generator", lambda *_, **__: generator_module.Generator(client=fake_openai))
+    monkeypatch.setattr(query_shared_module, "Generator", lambda *_, **__: generator_module.Generator(client=fake_openai))
 
     class _IdentityBackend:
         provider = "identity"
@@ -142,7 +150,7 @@ def client(monkeypatch, fake_db: FakeSupabaseClient) -> TestClient:
     return TestClient(app)
 
 
-def _create_api_key(client: TestClient) -> str:
+def _create_api_key(client: TestClient, *, return_integration_id: bool = False):
     integration_resp = client.post(
         "/platform/integrations",
         json={"name": "Production API", "environment": "production"},
@@ -168,7 +176,10 @@ def _create_api_key(client: TestClient) -> str:
         headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
     )
     assert key_resp.status_code == 201, key_resp.text
-    return key_resp.json()["secret"]
+    secret = key_resp.json()["secret"]
+    if return_integration_id:
+        return secret, integration_id
+    return secret
 
 
 def test_platform_dashboard_creates_api_key_once_and_masks_storage(
@@ -189,11 +200,11 @@ def test_platform_dashboard_creates_api_key_once_and_masks_storage(
     assert "secret" not in body["api_keys"][0]
 
 
-def test_v1_query_is_api_key_scoped_to_knowledge_base(
+def test_v1_query_scoped_to_tenant(
     client: TestClient,
     fake_db: FakeSupabaseClient,
 ) -> None:
-    secret = _create_api_key(client)
+    secret, integration_id = _create_api_key(client, return_integration_id=True)
     kb_resp = client.post(
         "/v1/knowledge-bases",
         json={"name": "Legal"},
@@ -207,6 +218,7 @@ def test_v1_query_is_api_key_scoped_to_knowledge_base(
         {
             "id": job_id,
             "tenant_id": TENANT_ID,
+            "integration_id": integration_id,
             "knowledge_base_id": kb_id,
             "file_name": "contract.pdf",
             "file_path": "local://contract.pdf",
@@ -217,19 +229,11 @@ def test_v1_query_is_api_key_scoped_to_knowledge_base(
             "updated_at": "2026-04-16T10:01:00+00:00",
         }
     ).execute()
-    fake_db.table("documents").insert(_doc(job_id, kb_id)).execute()
-
-    other_kb_id = str(uuid.uuid4())
-    fake_db.table("knowledge_bases").insert(
-        {"id": other_kb_id, "tenant_id": OTHER_TENANT_ID, "name": "Other", "slug": "other", "status": "active", "settings": {}}
-    ).execute()
-    fake_db.table("documents").insert(
-        {**_doc(str(uuid.uuid4()), other_kb_id), "tenant_id": OTHER_TENANT_ID, "knowledge_base_id": other_kb_id}
-    ).execute()
+    fake_db.table("documents").insert(_doc(job_id, kb_id, integration_id=integration_id)).execute()
 
     response = client.post(
         "/v1/query",
-        json={"query": "What is the liability cap?", "knowledge_base_ids": [kb_id], "match_count": 2},
+        json={"query": "What is the liability cap?", "match_count": 2},
         headers={"Authorization": f"Bearer {secret}"},
     )
     assert response.status_code == 200, response.text
@@ -239,13 +243,6 @@ def test_v1_query_is_api_key_scoped_to_knowledge_base(
     assert body["usage"]["input_tokens"] > 0
     assert fake_db.rows("request_logs")[-1]["tenant_id"] == TENANT_ID
     assert fake_db.rows("audit_logs")[-1]["action"] == "query.executed"
-
-    forbidden = client.post(
-        "/v1/query",
-        json={"query": "What is the liability cap?", "knowledge_base_ids": [other_kb_id], "match_count": 2},
-        headers={"Authorization": f"Bearer {secret}"},
-    )
-    assert forbidden.status_code == 404
 
 
 def test_v1_documents_connectors_usage_and_audit_roundtrip(
@@ -308,7 +305,7 @@ def test_v1_stream_query_emits_request_id_and_usage(
     client: TestClient,
     fake_db: FakeSupabaseClient,
 ) -> None:
-    secret = _create_api_key(client)
+    secret, integration_id = _create_api_key(client, return_integration_id=True)
     kb_resp = client.post(
         "/v1/knowledge-bases",
         json={"name": "Support"},
@@ -320,6 +317,7 @@ def test_v1_stream_query_emits_request_id_and_usage(
         {
             "id": job_id,
             "tenant_id": TENANT_ID,
+            "integration_id": integration_id,
             "knowledge_base_id": kb_id,
             "file_name": "support.pdf",
             "file_path": "local://support.pdf",
@@ -330,12 +328,12 @@ def test_v1_stream_query_emits_request_id_and_usage(
             "updated_at": "2026-04-16T10:01:00+00:00",
         }
     ).execute()
-    fake_db.table("documents").insert(_doc(job_id, kb_id)).execute()
+    fake_db.table("documents").insert(_doc(job_id, kb_id, integration_id=integration_id)).execute()
 
     with client.stream(
         "POST",
         "/v1/query/stream",
-        json={"query": "What is the liability cap?", "knowledge_base_ids": [kb_id]},
+        json={"query": "What is the liability cap?"},
         headers={"Authorization": f"Bearer {secret}"},
     ) as response:
         assert response.status_code == 200
@@ -355,3 +353,335 @@ def test_v1_stream_query_emits_request_id_and_usage(
     done_payload = json.loads(events[-1][1])
     assert done_payload["request_id"]
     assert done_payload["usage"]["total_tokens"] > 0
+
+
+def test_count_integrations_and_api_keys_scoped_to_tenant(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    _create_api_key(client)
+
+    # Another tenant's integration + key should not be counted.
+    other_integration_id = str(uuid.uuid4())
+    fake_db.table("integrations").insert(
+        {
+            "id": other_integration_id,
+            "tenant_id": OTHER_TENANT_ID,
+            "name": "Other Tenant Prod",
+            "environment": "production",
+        }
+    ).execute()
+    fake_db.table("api_keys").insert(
+        {
+            "tenant_id": OTHER_TENANT_ID,
+            "integration_id": other_integration_id,
+            "name": "Other key",
+            "prefix": "sk_test",
+            "secret_hash": "hash",
+            "scopes": ["query:read"],
+            "status": "active",
+        }
+    ).execute()
+
+    headers = {"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID}
+    integ_resp = client.get("/platform/integrations/count", headers=headers)
+    assert integ_resp.status_code == 200, integ_resp.text
+    assert integ_resp.json()["count"] == 1
+
+    keys_resp = client.get("/platform/api-keys/count", headers=headers)
+    assert keys_resp.status_code == 200
+    assert keys_resp.json()["count"] == 1
+
+
+def test_update_integration_patches_fields_and_writes_audit_log(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    create_resp = client.post(
+        "/platform/integrations",
+        json={"name": "Original", "environment": "staging"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    integration_id = create_resp.json()["id"]
+
+    patch_resp = client.patch(
+        f"/platform/integrations/{integration_id}",
+        json={"name": "Renamed", "environment": "production", "metadata": {"owner": "acme"}},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    body = patch_resp.json()
+    assert body["message"] == "Integration updated successfully"
+    assert body["name"] == "Renamed"
+    assert body["environment"] == "production"
+    assert body["metadata"] == {"owner": "acme"}
+
+    audit_actions = [row["action"] for row in fake_db.rows("audit_logs")]
+    assert "integration.updated" in audit_actions
+
+
+def test_update_integration_returns_404_for_unknown_id(client: TestClient) -> None:
+    unknown = uuid.uuid4()
+    resp = client.patch(
+        f"/platform/integrations/{unknown}",
+        json={"name": "x"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_integration_cascades_documents_jobs_storage_and_keys(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    secret, integration_id = _create_api_key(client, return_integration_id=True)
+    assert secret  # secret is returned but unused here
+    kb_resp = client.post(
+        "/v1/knowledge-bases",
+        json={"name": "Legal"},
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    kb_id = kb_resp.json()["id"]
+
+    job_id = str(uuid.uuid4())
+    storage_path = f"{TENANT_ID}/{integration_id}/{job_id}/contract.pdf"
+    fake_db.table("ingestion_jobs").insert(
+        {
+            "id": job_id,
+            "tenant_id": TENANT_ID,
+            "integration_id": integration_id,
+            "knowledge_base_id": kb_id,
+            "file_name": "contract.pdf",
+            "file_path": storage_path,
+            "status": "completed",
+            "processed_chunks": 1,
+            "total_chunks": 1,
+            "created_at": "2026-04-16T10:00:00+00:00",
+            "updated_at": "2026-04-16T10:01:00+00:00",
+        }
+    ).execute()
+    fake_db.table("documents").insert(
+        _doc(job_id, kb_id, integration_id=integration_id)
+    ).execute()
+
+    delete_resp = client.delete(
+        f"/platform/integrations/{integration_id}",
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert delete_resp.status_code == 200, delete_resp.text
+    body = delete_resp.json()
+    assert body["message"] == "Integration and all associated resources deleted"
+    assert body["integration_id"] == integration_id
+    assert body["deleted_documents"] == 1
+    assert body["deleted_jobs"] == 1
+    assert body["deleted_api_keys"] == 1
+    assert body["deleted_storage_objects"] == 1
+
+    assert not any(
+        row["id"] == integration_id for row in fake_db.rows("integrations")
+    )
+    assert not any(row["id"] == job_id for row in fake_db.rows("ingestion_jobs"))
+    assert not any(row.get("job_id") == job_id for row in fake_db.rows("documents"))
+    assert fake_db.removed_paths == [[storage_path]]  # type: ignore[attr-defined]
+    assert "integration.deleted" in [
+        row["action"] for row in fake_db.rows("audit_logs")
+    ]
+
+
+def test_delete_integration_skips_local_storage_paths(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    _, integration_id = _create_api_key(client, return_integration_id=True)
+    job_id = str(uuid.uuid4())
+    fake_db.table("ingestion_jobs").insert(
+        {
+            "id": job_id,
+            "tenant_id": TENANT_ID,
+            "integration_id": integration_id,
+            "file_name": "local.md",
+            "file_path": "local://local.md",
+            "status": "completed",
+            "processed_chunks": 0,
+            "total_chunks": 0,
+        }
+    ).execute()
+
+    resp = client.delete(
+        f"/platform/integrations/{integration_id}",
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_jobs"] == 1
+    assert body["deleted_storage_objects"] == 0
+    assert fake_db.removed_paths == []  # type: ignore[attr-defined]
+
+
+def test_delete_integration_returns_404_for_unknown_id(client: TestClient) -> None:
+    unknown = uuid.uuid4()
+    resp = client.delete(
+        f"/platform/integrations/{unknown}",
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert resp.status_code == 404
+
+
+def test_create_integration_defaults_prompt_name(client: TestClient) -> None:
+    resp = client.post(
+        "/platform/integrations",
+        json={"name": "Default Prompt Integration", "environment": "production"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["prompt_name"] == "rag_generation_v1"
+
+
+def test_create_integration_accepts_explicit_prompt_name(client: TestClient) -> None:
+    resp = client.post(
+        "/platform/integrations",
+        json={
+            "name": "Custom Prompt Integration",
+            "environment": "production",
+            "prompt_name": "custom_prompt_v2",
+        },
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["prompt_name"] == "custom_prompt_v2"
+
+
+def test_update_integration_can_change_prompt_name(client: TestClient) -> None:
+    create_resp = client.post(
+        "/platform/integrations",
+        json={"name": "Switchable", "environment": "production"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    integration_id = create_resp.json()["id"]
+
+    patch_resp = client.patch(
+        f"/platform/integrations/{integration_id}",
+        json={"prompt_name": "support_answers_v3"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["prompt_name"] == "support_answers_v3"
+
+
+def test_list_integrations_surfaces_prompt_name(client: TestClient) -> None:
+    client.post(
+        "/platform/integrations",
+        json={"name": "Listed", "environment": "production", "prompt_name": "x_v1"},
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    list_resp = client.get(
+        "/platform/integrations",
+        headers={"Authorization": "Bearer header.payload.sig", "X-Tenant-Id": TENANT_ID},
+    )
+    assert list_resp.status_code == 200, list_resp.text
+    integrations = list_resp.json()["integrations"]
+    assert any(i.get("prompt_name") == "x_v1" for i in integrations)
+
+
+def test_platform_usage_aggregates_request_logs_for_tenant(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    fake_db.table("request_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": TENANT_ID,
+            "endpoint": "/v1/query",
+            "method": "POST",
+            "status_code": 200,
+            "latency_ms": 120,
+            "input_tokens": 40,
+            "output_tokens": 60,
+            "created_at": "2026-04-17T10:00:00+00:00",
+        }
+    ).execute()
+    fake_db.table("request_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": TENANT_ID,
+            "endpoint": "/v1/query",
+            "method": "POST",
+            "status_code": 500,
+            "latency_ms": 200,
+            "input_tokens": 10,
+            "output_tokens": 0,
+            "created_at": "2026-04-17T12:00:00+00:00",
+        }
+    ).execute()
+    # A row for a different tenant that must not leak.
+    fake_db.table("request_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": OTHER_TENANT_ID,
+            "endpoint": "/v1/query",
+            "method": "POST",
+            "status_code": 200,
+            "latency_ms": 50,
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "created_at": "2026-04-17T10:00:00+00:00",
+        }
+    ).execute()
+
+    resp = client.get(
+        "/platform/usage",
+        headers={"Authorization": "Bearer header.payload.sig"},
+    )
+    assert resp.status_code == 200, resp.text
+    buckets = resp.json()["buckets"]
+    assert len(buckets) == 1
+    bucket = buckets[0]
+    assert bucket["request_count"] == 2
+    assert bucket["success_count"] == 1
+    assert bucket["error_count"] == 1
+    assert bucket["total_input_tokens"] == 50
+    assert bucket["total_output_tokens"] == 60
+    assert bucket["avg_latency_ms"] == 160.0
+
+
+def test_platform_audit_logs_returns_tenant_entries_only(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    fake_db.table("audit_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": TENANT_ID,
+            "actor_type": "dashboard_user",
+            "actor_id": "user-1",
+            "action": "integration.created",
+            "resource_type": "integration",
+            "resource_id": str(uuid.uuid4()),
+            "metadata": {},
+            "created_at": "2026-04-17T09:00:00+00:00",
+        }
+    ).execute()
+    fake_db.table("audit_logs").insert(
+        {
+            "id": str(uuid.uuid4()),
+            "tenant_id": OTHER_TENANT_ID,
+            "actor_type": "dashboard_user",
+            "actor_id": "user-99",
+            "action": "integration.created",
+            "resource_type": "integration",
+            "resource_id": str(uuid.uuid4()),
+            "metadata": {},
+            "created_at": "2026-04-17T09:00:00+00:00",
+        }
+    ).execute()
+
+    resp = client.get(
+        "/platform/audit-logs",
+        headers={"Authorization": "Bearer header.payload.sig"},
+    )
+    assert resp.status_code == 200, resp.text
+    entries = resp.json()["audit_logs"]
+    assert len(entries) == 1
+    assert entries[0]["tenant_id"] == TENANT_ID
+    assert entries[0]["action"] == "integration.created"

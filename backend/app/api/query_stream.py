@@ -18,7 +18,7 @@ from app.pipeline.query_pipeline import (
     prepare_query,
     stamp_total_latency,
 )
-from app.utils.api_errors import raise_api_error, success_payload
+from app.utils.api_errors import success_payload
 from app.utils.integration_resolver import resolve_integration
 from app.utils.logger import get_logger
 
@@ -34,24 +34,64 @@ async def query_stream(
 ) -> EventSourceResponse:
     client = get_service_client()
     integration_id_str = str(payload.integration_id) if payload.integration_id else None
-    integration = resolve_integration(client, auth.tenant_id, integration_id_str)
-    resolved_integration_id = str(integration["id"])
-    try:
-        prepared = await prepare_query(
-            query=payload.query,
-            tenant_id=auth.tenant_id,
-            integration_id=resolved_integration_id,
-            match_count=payload.match_count,
-            rerank=payload.rerank,
-            prompt_name=payload.prompt_name,
-            client=client,
-        )
-    except QueryPipelineError as exc:
-        logger.error("query_stream.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
-        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
 
     async def event_generator() -> AsyncIterator[dict]:
-        # Emit sources first so the client can pre-render citation cards.
+        try:
+            integration = resolve_integration(client, auth.tenant_id, integration_id_str)
+            resolved_integration_id = str(integration["id"])
+        except HTTPException as exc:
+            logger.error(
+                "query_stream.integration_resolution_failed",
+                tenant_id=auth.tenant_id,
+                error=str(exc.detail),
+            )
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": "Integration resolution failed", "detail": exc.detail}),
+            }
+            yield {
+                "event": "done",
+                "data": json.dumps(success_payload("query.stream_generation_failed", declined=False)),
+            }
+            return
+
+        try:
+            prepared = await prepare_query(
+                query=payload.query,
+                tenant_id=auth.tenant_id,
+                integration_id=resolved_integration_id,
+                match_count=payload.match_count,
+                rerank=payload.rerank,
+                prompt_name=payload.prompt_name,
+                client=client,
+            )
+        except QueryPipelineError as exc:
+            logger.error("query_stream.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": "Query pipeline failed", "detail": str(exc)}),
+            }
+            yield {
+                "event": "done",
+                "data": json.dumps(success_payload("query.stream_generation_failed", declined=False)),
+            }
+            return
+        except Exception as exc:  # defensive: surface to client instead of hanging
+            logger.exception(
+                "query_stream.unexpected_failure",
+                tenant_id=auth.tenant_id,
+                error=str(exc),
+            )
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": "Unexpected error", "detail": str(exc)}),
+            }
+            yield {
+                "event": "done",
+                "data": json.dumps(success_payload("query.stream_generation_failed", declined=False)),
+            }
+            return
+
         upfront_citations = (
             resolve_citations("", prepared.final_chunks, include_uncited=True)
             if payload.include_sources
@@ -82,9 +122,9 @@ async def query_stream(
             }
             return
 
+        gen_start = time.perf_counter()
         try:
             generator = Generator()
-            gen_start = time.perf_counter()
             async for token in generator.stream(
                 prompt=prepared.prompt,
                 context=prepared.context,
@@ -99,12 +139,11 @@ async def query_stream(
             )
             yield {
                 "event": "error",
-                "data": json.dumps(
-                    success_payload(
-                        "query.stream_generation_failed",
-                        detail=str(exc),
-                    )
-                ),
+                "data": json.dumps({"message": "Generation failed", "detail": str(exc)}),
+            }
+            yield {
+                "event": "done",
+                "data": json.dumps(success_payload("query.stream_generation_failed", declined=False)),
             }
             return
 

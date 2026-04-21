@@ -29,7 +29,6 @@ class SparseRetriever:
         self,
         query_text: str,
         tenant_id: str,
-        knowledge_base_ids: Optional[List[str]] = None,
         integration_id: Optional[str] = None,
         top_n: int = 20,
     ) -> List[Dict[str, Any]]:
@@ -37,7 +36,6 @@ class SparseRetriever:
             "query_text": query_text,
             "match_count": top_n,
             "filter_tenant_id": tenant_id,
-            "filter_knowledge_base_ids": knowledge_base_ids,
             "filter_integration_id": integration_id,
         }
         try:
@@ -64,7 +62,13 @@ class SparseRetriever:
 
 
 class HybridRetriever:
-    """Calls the `match_documents_hybrid` RPC that fuses dense + sparse via RRF."""
+    """Calls the `match_documents_hybrid` RPC that fuses dense + sparse via RRF.
+
+    Supports OpenAI-style weighted RRF: ``semantic_weight`` and
+    ``full_text_weight`` bias the contribution of the dense and sparse
+    ranklists respectively. Defaults come from app settings and can be
+    overridden per call (e.g. for keyword-heavy corpora like code).
+    """
 
     def __init__(self, client: Optional[Any] = None) -> None:
         self._client = client or get_service_client()
@@ -74,13 +78,20 @@ class HybridRetriever:
         query_embedding: List[float],
         query_text: str,
         tenant_id: str,
-        knowledge_base_ids: Optional[List[str]] = None,
         integration_id: Optional[str] = None,
         match_count: int = 20,
         rrf_k: int = 60,
         dense_top_n: int = 20,
         sparse_top_n: int = 20,
+        semantic_weight: Optional[float] = None,
+        full_text_weight: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
+        from app.config import get_settings
+
+        settings = get_settings()
+        sw = settings.semantic_weight if semantic_weight is None else semantic_weight
+        fw = settings.full_text_weight if full_text_weight is None else full_text_weight
+
         params = {
             "query_embedding": query_embedding,
             "query_text": query_text,
@@ -89,8 +100,9 @@ class HybridRetriever:
             "dense_top_n": dense_top_n,
             "sparse_top_n": sparse_top_n,
             "filter_tenant_id": tenant_id,
-            "filter_knowledge_base_ids": knowledge_base_ids,
             "filter_integration_id": integration_id,
+            "semantic_weight": sw,
+            "full_text_weight": fw,
         }
         try:
             response = await asyncio.to_thread(
@@ -98,6 +110,41 @@ class HybridRetriever:
             )
         except Exception as exc:
             message = str(exc)
+            if _is_missing_weighted_rpc_error(message):
+                # Older DB that doesn't know about the weighted params yet.
+                # Retry without them — equivalent to equal-weight RRF.
+                logger.warning(
+                    "hybrid_retriever.rpc_weights_unsupported_retry_unweighted",
+                    tenant_id=tenant_id,
+                    error=message,
+                )
+                legacy_params = {
+                    k: v
+                    for k, v in params.items()
+                    if k not in ("semantic_weight", "full_text_weight")
+                }
+                try:
+                    response = await asyncio.to_thread(
+                        lambda: self._client.rpc(
+                            "match_documents_hybrid", legacy_params
+                        ).execute()
+                    )
+                except Exception as retry_exc:  # pragma: no cover - defensive
+                    message = str(retry_exc)
+                    exc = retry_exc
+                else:
+                    rows = response.data or []
+                    return [
+                        {
+                            "id": row["id"],
+                            "content": row["content"],
+                            "metadata": row.get("metadata") or {},
+                            "rrf_score": float(row.get("rrf_score") or 0.0),
+                            "dense_rank": int(row.get("dense_rank") or 0),
+                            "sparse_rank": int(row.get("sparse_rank") or 0),
+                        }
+                        for row in rows
+                    ]
             if _is_missing_hybrid_rpc_error(message):
                 logger.warning(
                     "hybrid_retriever.rpc_missing_fallback_dense",
@@ -108,7 +155,6 @@ class HybridRetriever:
                     dense_results = await DenseRetriever(client=self._client).retrieve(
                         query_embedding=query_embedding,
                         tenant_id=tenant_id,
-                        knowledge_base_ids=knowledge_base_ids,
                         integration_id=integration_id,
                         top_n=match_count,
                     )
@@ -154,3 +200,15 @@ class HybridRetriever:
 
 def _is_missing_hybrid_rpc_error(message: str) -> bool:
     return "PGRST202" in message or "Could not find the function public.match_documents_hybrid" in message
+
+
+def _is_missing_weighted_rpc_error(message: str) -> bool:
+    """Detect a PostgREST schema-cache miss for the weighted-RRF signature.
+
+    When the DB has the unweighted function but not the weighted one,
+    PostgREST returns PGRST202 while naming the `semantic_weight` /
+    `full_text_weight` params it could not match. We retry without them.
+    """
+    if "PGRST202" not in message:
+        return False
+    return "semantic_weight" in message or "full_text_weight" in message

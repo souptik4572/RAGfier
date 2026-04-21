@@ -1,0 +1,41 @@
+# ─── Node / build artifacts ──────────────────────────────────────────────────
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+.next
+out
+build
+dist
+tsconfig.tsbuildinfo
+
+# ─── Environment / secrets ───────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+
+# ─── VCS / editor / CI ───────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.github
+
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# ─── Testing / coverage / misc ───────────────────────────────────────────────
+coverage
+.nyc_output
+.vitest-cache
+.next-test
+
+# ─── Dockerfile self ─────────────────────────────────────────────────────────
+Dockerfile
+.dockerignore
+README.md

@@ -123,3 +123,11 @@ def test_start_eval_run_rejects_missing_dataset(eval_client: TestClient) -> None
         json={"dataset_version": "does_not_exist", "trigger": "manual"},
     )
     assert response.status_code == 404
+
+
+def test_count_eval_runs_returns_tenant_scoped_total(eval_client: TestClient) -> None:
+    response = eval_client.get("/eval/runs/count")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["message"] == "Evaluation run count retrieved successfully"
+    assert body["count"] == 1

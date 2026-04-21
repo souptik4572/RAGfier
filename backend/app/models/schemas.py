@@ -32,7 +32,7 @@ class JobStatusResponse(BaseModel):
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1)
     integration_id: Optional[UUID] = None
-    match_count: int = Field(default=5, ge=1, le=50)
+    match_count: int = Field(default=8, ge=1, le=50)
     rerank: bool = Field(default=True)
     include_sources: bool = Field(default=True)
     prompt_name: Optional[str] = Field(default=None)
@@ -154,13 +154,16 @@ class AuthTokenResponse(BaseModel):
 
 class PromptSummary(BaseModel):
     message: str = ""
-    id: UUID
+    id: Optional[UUID] = None
     name: str
     version: int
     is_active: bool
     tenant_id: Optional[UUID] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    source: str = "database"
     created_at: Optional[datetime] = None
+    system_prompt: Optional[str] = None
+    user_prompt_template: Optional[str] = None
 
 
 class PromptListResponse(BaseModel):
@@ -267,6 +270,7 @@ class IntegrationCreateRequest(BaseModel):
     name: str = Field(..., min_length=1)
     environment: str = Field(default="production", min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    prompt_name: Optional[str] = Field(default=None, min_length=1)
 
 
 class IntegrationSummary(BaseModel):
@@ -276,12 +280,35 @@ class IntegrationSummary(BaseModel):
     name: str
     environment: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    prompt_name: str = "rag_generation_v1"
     created_at: Optional[datetime] = None
 
 
 class IntegrationListResponse(BaseModel):
     message: str
     integrations: List[IntegrationSummary]
+
+
+class IntegrationUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1)
+    environment: Optional[str] = Field(default=None, min_length=1)
+    metadata: Optional[dict[str, Any]] = None
+    is_default: Optional[bool] = None
+    prompt_name: Optional[str] = Field(default=None, min_length=1)
+
+
+class IntegrationDeleteResponse(BaseModel):
+    message: str
+    integration_id: UUID
+    deleted_documents: int = 0
+    deleted_jobs: int = 0
+    deleted_api_keys: int = 0
+    deleted_storage_objects: int = 0
+
+
+class CountResponse(BaseModel):
+    message: str
+    count: int
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -340,8 +367,7 @@ class KnowledgeBaseListResponse(BaseModel):
 
 class QueryRequestV1(BaseModel):
     query: str = Field(..., min_length=1)
-    knowledge_base_ids: List[UUID] = Field(..., min_length=1)
-    match_count: int = Field(default=5, ge=1, le=50)
+    match_count: int = Field(default=8, ge=1, le=50)
     rerank: bool = Field(default=True)
     include_sources: bool = Field(default=True)
     stream: bool = Field(default=False)
@@ -446,7 +472,7 @@ class UsageResponse(BaseModel):
 class IntegrationQueryRequest(BaseModel):
     query: str = Field(..., min_length=1)
     integration_id: Optional[UUID] = None
-    match_count: int = Field(default=5, ge=1, le=50)
+    match_count: int = Field(default=8, ge=1, le=50)
     rerank: bool = Field(default=True)
     include_sources: bool = Field(default=True)
     prompt_name: Optional[str] = Field(default=None)

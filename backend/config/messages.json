@@ -63,6 +63,7 @@
   "eval": {
     "run_accepted": "Evaluation pipeline started",
     "runs_listed": "Evaluation runs retrieved successfully",
+    "runs_counted": "Evaluation run count retrieved successfully",
     "samples_listed": "Evaluation samples retrieved successfully",
     "dataset_not_found": "Evaluation dataset not found.",
     "run_not_found": "Evaluation run not found.",
@@ -70,9 +71,14 @@
   },
   "platform": {
     "integration_created": "Integration created successfully",
+    "integration_fetched": "Integration retrieved successfully",
+    "integration_updated": "Integration updated successfully",
+    "integration_deleted": "Integration and all associated resources deleted",
     "integrations_listed": "Integrations retrieved successfully",
+    "integrations_counted": "Integration count retrieved successfully",
     "api_key_created": "API key created successfully",
     "api_keys_listed": "API keys retrieved successfully",
+    "api_keys_counted": "API key count retrieved successfully",
     "api_key_revoked": "API key revoked successfully",
     "integration_not_found": "Integration not found for this tenant.",
     "api_key_not_found": "API key not found for this tenant.",

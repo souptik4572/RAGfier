@@ -59,8 +59,14 @@ async def run_evaluation(
     git_branch: Optional[str] = None,
     persist: bool = True,
     reports_dir: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> dict:
-    """Execute a full evaluation run. Returns a dict with run id + summary."""
+    """Execute a full evaluation run. Returns a dict with run id + summary.
+
+    If *run_id* is supplied (e.g. pre-created by the API layer so the caller
+    can receive a UUID immediately in a 202 response) that existing row is
+    reused and no second ``create_run_row`` call is made.
+    """
     settings = get_settings()
     client = client or get_service_client()
     ragas_runner = ragas_runner or RagasRunner()
@@ -68,8 +74,11 @@ async def run_evaluation(
 
     started = time.perf_counter()
 
-    run_id = (
-        create_run_row(
+    if run_id is not None:
+        # Reuse the row that was pre-created by the caller.
+        pass
+    elif persist:
+        run_id = create_run_row(
             client,
             tenant_id=tenant_id,
             dataset_version=dataset.version,
@@ -79,9 +88,8 @@ async def run_evaluation(
             git_branch=git_branch,
             eval_model=settings.eval_llm_judge,
         )
-        if persist
-        else "local-run"
-    )
+    else:
+        run_id = "local-run"
 
     outcomes: List[SampleOutcome] = []
     try:

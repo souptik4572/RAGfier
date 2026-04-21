@@ -5,7 +5,7 @@ import uuid
 import httpx
 import pytest
 
-from sdk.python.ragfier_sdk import RagfierSDK, RagfierSDKError
+from sdk.python.ragfier_sdk import RagfierSDK
 from tests.test_platform_api import (
     TENANT_ID,
     _create_api_key,
@@ -18,7 +18,7 @@ from tests.test_platform_api import (
 @pytest.mark.asyncio
 async def test_sdk_query_and_error_paths(client) -> None:
     sync_client = client
-    secret = _create_api_key(sync_client)
+    secret, integration_id = _create_api_key(sync_client, return_integration_id=True)
     kb_resp = sync_client.post(
         "/v1/knowledge-bases",
         json={"name": "SDK KB"},
@@ -34,6 +34,7 @@ async def test_sdk_query_and_error_paths(client) -> None:
         {
             "id": job_id,
             "tenant_id": TENANT_ID,
+            "integration_id": integration_id,
             "knowledge_base_id": kb_id,
             "file_name": "sdk.pdf",
             "file_path": "local://sdk.pdf",
@@ -44,18 +45,13 @@ async def test_sdk_query_and_error_paths(client) -> None:
             "updated_at": "2026-04-16T10:01:00+00:00",
         }
     ).execute()
-    fake_db.table("documents").insert(_doc(job_id, kb_id)).execute()
+    fake_db.table("documents").insert(_doc(job_id, kb_id, integration_id=integration_id)).execute()
 
     transport = httpx.ASGITransport(app=sync_client.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
         sdk = RagfierSDK(api_key=secret, base_url="http://testserver", client=http_client)
         response = await sdk.query(
             query="What is the liability cap?",
-            knowledge_base_ids=[kb_id],
             match_count=2,
         )
         assert response["answer"].startswith("The liability cap")
-
-        with pytest.raises(RagfierSDKError) as exc:
-            await sdk.query(query="Bad KB", knowledge_base_ids=[str(uuid.uuid4())])
-        assert exc.value.status_code == 404

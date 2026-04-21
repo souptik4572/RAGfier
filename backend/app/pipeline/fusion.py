@@ -7,6 +7,8 @@ def reciprocal_rank_fusion(
     dense_results: Iterable[Dict[str, Any]],
     sparse_results: Iterable[Dict[str, Any]],
     k: int = 60,
+    semantic_weight: float = 1.0,
+    full_text_weight: float = 1.0,
 ) -> List[Dict[str, Any]]:
     """Merge dense + sparse ranked lists into a single RRF-scored list.
 
@@ -14,19 +16,23 @@ def reciprocal_rank_fusion(
     sorted by descending RRF score, with ``rrf_score``, ``dense_rank``, and
     ``sparse_rank`` populated on each entry. The original metadata is
     preserved from whichever list first contributed the document.
+
+    ``semantic_weight`` / ``full_text_weight`` bias dense vs sparse
+    contribution (OpenAI "File Search" style). Defaults are 1.0 / 1.0 for
+    backward compatibility; production callers typically pass ~0.7 / 0.3.
     """
     scores: Dict[str, float] = {}
     doc_map: Dict[str, Dict[str, Any]] = {}
 
     for rank, doc in enumerate(dense_results, start=1):
         doc_id = str(doc["id"])
-        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+        scores[doc_id] = scores.get(doc_id, 0.0) + semantic_weight / (k + rank)
         entry = doc_map.setdefault(doc_id, dict(doc))
         entry["dense_rank"] = rank
 
     for rank, doc in enumerate(sparse_results, start=1):
         doc_id = str(doc["id"])
-        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+        scores[doc_id] = scores.get(doc_id, 0.0) + full_text_weight / (k + rank)
         entry = doc_map.setdefault(doc_id, dict(doc))
         entry["sparse_rank"] = rank
 

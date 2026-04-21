@@ -73,7 +73,6 @@ async def prepare_query(
     *,
     query: str,
     tenant_id: str,
-    knowledge_base_ids: Optional[List[str]] = None,
     integration_id: Optional[str] = None,
     match_count: int,
     rerank: bool,
@@ -95,7 +94,12 @@ async def prepare_query(
     # Load prompt + embed query in parallel. Prompt lookup hits Supabase;
     # the embed call hits OpenAI. They have no data dependency on one
     # another, so running them sequentially wastes ~1 RTT on every query.
-    name = prompt_name or settings.default_prompt_name
+    # Precedence: explicit prompt_name → integration's configured prompt
+    # → global default. Integrations store the *name* (not a prompt_versions
+    # id), so the lookup automatically follows whichever version the tenant
+    # has marked active.
+    name = prompt_name or _integration_prompt_name(client, integration_id) \
+        or settings.default_prompt_name
     embedder = embedder or _default_embedder()
 
     prompt_started = time.perf_counter()
@@ -120,7 +124,6 @@ async def prepare_query(
             query_embedding=query_embedding,
             query_text=query,
             tenant_id=tenant_id,
-            knowledge_base_ids=knowledge_base_ids,
             integration_id=integration_id,
             match_count=max(match_count, settings.rerank_top_k, settings.dense_top_n),
             rrf_k=settings.rrf_k,
@@ -194,6 +197,32 @@ async def prepare_query(
         started_at=started,
     )
     return prepared
+
+
+def _integration_prompt_name(client: Any, integration_id: Optional[str]) -> Optional[str]:
+    """Look up the integration's configured prompt name, if any."""
+    if not integration_id:
+        return None
+    try:
+        rows = (
+            client.table("integrations")
+            .select("prompt_name")
+            .eq("id", integration_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "query_pipeline.integration_prompt_lookup_failed",
+            integration_id=integration_id,
+            error=str(exc),
+        )
+        return None
+    if not rows:
+        return None
+    return rows[0].get("prompt_name") or None
 
 
 def _ms_since(start: float) -> int:

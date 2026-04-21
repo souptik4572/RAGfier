@@ -1,24 +1,25 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import time
 import uuid
-from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable, Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
 from sse_starlette.sse import EventSourceResponse
 
+from app.api._query_shared import (
+    build_stream_response,
+    elapsed_ms,
+    execute_query,
+)
 from app.api.auth import _slugify
 from app.api.platform_auth import PlatformAuthContext, require_platform_context
 from app.config import get_settings
 from app.models.database import get_service_client
 from app.models.schemas import (
-    AuditLogEntry,
     AuditLogListResponse,
     ConnectorCreateRequest,
     ConnectorSummary,
@@ -35,28 +36,19 @@ from app.models.schemas import (
     QueryRequestV1,
     QueryResponseV1,
     UploadDocumentResponse,
-    UsageBucket,
-    UsageMetadata,
     UsageResponse,
 )
-from app.pipeline.citation_resolver import resolve_citations
-from app.pipeline.generator import Generator, GenerationError
 from app.pipeline.orchestrator import run_pipeline_task
-from app.pipeline.query_pipeline import (
-    INSUFFICIENT_CONTEXT_MESSAGE,
-    QueryPipelineError,
-    prepare_query,
-    stamp_total_latency,
-)
-from app.utils.api_errors import build_response, raise_api_error, success_payload
+from app.utils.api_errors import build_response, raise_api_error
 from app.utils.logger import get_logger
 from app.utils.platform_observability import (
+    aggregate_usage_buckets,
+    list_audit_log_entries,
     write_audit_log,
     write_audit_log_async,
     write_request_log_async,
 )
 from app.utils.platform_security import encrypt_connector_config
-from app.utils.token_counter import count_tokens
 
 logger = get_logger(__name__)
 
@@ -155,6 +147,7 @@ async def upload_document_v1(
         {
             "id": job_id,
             "tenant_id": auth.tenant_id,
+            "integration_id": auth.integration_id,
             "knowledge_base_id": str(knowledge_base_id),
             "file_name": file.filename,
             "file_path": storage_path,
@@ -168,6 +161,7 @@ async def upload_document_v1(
         run_pipeline_task,
         job_id=job_id,
         tenant_id=auth.tenant_id,
+        integration_id=auth.integration_id,
         knowledge_base_id=str(knowledge_base_id),
         source_type="upload",
         file_path=str(tmp_file),
@@ -194,7 +188,7 @@ async def upload_document_v1(
         endpoint="/v1/documents/upload",
         method="POST",
         status_code=202,
-        latency_ms=_elapsed_ms(started),
+        latency_ms=elapsed_ms(started),
         input_tokens=0,
         output_tokens=0,
         metadata={"knowledge_base_id": str(knowledge_base_id)},
@@ -269,145 +263,14 @@ async def query_v1(
     payload: QueryRequestV1,
     auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
 ) -> QueryResponseV1:
-    started = time.perf_counter()
-    client = get_service_client()
-    _require_kbs(client, auth.tenant_id, payload.knowledge_base_ids)
-    request_id = uuid.uuid4()
-    # Compute once — tiktoken encoding is not free, and this value was
-    # previously recomputed on every success/declined/error branch below.
-    query_token_count = count_tokens(payload.query)
-
-    try:
-        prepared = await prepare_query(
-            query=payload.query,
-            tenant_id=auth.tenant_id,
-            knowledge_base_ids=[str(kb_id) for kb_id in payload.knowledge_base_ids],
-            match_count=payload.match_count,
-            rerank=payload.rerank,
-            prompt_name=payload.prompt_name,
-            client=client,
-        )
-    except QueryPipelineError as exc:
-        logger.error("platform.query.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query",
-            method="POST",
-            status_code=500,
-            latency_ms=_elapsed_ms(started),
-            input_tokens=query_token_count,
-            error_code="pipeline_failed",
-            metadata={"knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
-        )
-        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
-
-    if prepared.declined:
-        stamp_total_latency(prepared)
-        usage = UsageMetadata(input_tokens=query_token_count)
-        usage.total_tokens = usage.input_tokens
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query",
-            method="POST",
-            status_code=200,
-            latency_ms=prepared.retrieval_metadata.latency_ms.total,
-            input_tokens=usage.input_tokens,
-            output_tokens=0,
-            metadata={"declined": True},
-        )
-        await write_audit_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            actor_type="api_key",
-            actor_id=auth.api_key_id,
-            action="query.executed",
-            resource_type="query",
-            resource_id=str(request_id),
-            metadata={"declined": True, "knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
-        )
-        return build_response(
-            QueryResponseV1,
-            "query.declined",
-            request_id=request_id,
-            query=payload.query,
-            answer=INSUFFICIENT_CONTEXT_MESSAGE,
-            citations=[],
-            retrieval_metadata=prepared.retrieval_metadata,
-            declined=True,
-            usage=usage.model_dump(mode="json"),
-        )
-
-    try:
-        generator = Generator()
-        gen_started = time.perf_counter()
-        answer = await generator.generate(
-            prompt=prepared.prompt,
-            context=prepared.context,
-            query=payload.query,
-        )
-    except GenerationError as exc:
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query",
-            method="POST",
-            status_code=500,
-            latency_ms=_elapsed_ms(started),
-            input_tokens=query_token_count,
-            error_code="generation_failed",
-        )
-        raise_api_error(500, "query.generation_failed", detail=str(exc))
-
-    prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
-    stamp_total_latency(prepared)
-    citations = resolve_citations(answer, prepared.final_chunks) if payload.include_sources else []
-    usage = _usage_from_texts_cached(query_token_count, answer)
-    await write_request_log_async(
-        client,
-        tenant_id=auth.tenant_id,
-        integration_id=auth.integration_id,
-        api_key_id=auth.api_key_id,
+    return await execute_query(
+        payload=payload,
+        auth=auth,
+        client=get_service_client(),
+        response_model=QueryResponseV1,
         endpoint="/v1/query",
-        method="POST",
-        status_code=200,
-        latency_ms=prepared.retrieval_metadata.latency_ms.total,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        metadata={
-            "knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids],
-            "external_user_id": payload.external_user_id,
-            "session_id": payload.session_id,
-            "tags": payload.tags,
-        },
-    )
-    await write_audit_log_async(
-        client,
-        tenant_id=auth.tenant_id,
-        actor_type="api_key",
-        actor_id=auth.api_key_id,
-        action="query.executed",
-        resource_type="query",
-        resource_id=str(request_id),
-        metadata={"knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
-    )
-    return build_response(
-        QueryResponseV1,
-        "query.completed",
-        request_id=request_id,
-        query=payload.query,
-        answer=answer,
-        citations=citations,
-        retrieval_metadata=prepared.retrieval_metadata,
-        declined=False,
-        usage=usage.model_dump(mode="json"),
+        log_prefix="platform.query",
+        write_audit=True,
     )
 
 
@@ -416,120 +279,12 @@ async def query_stream_v1(
     payload: QueryRequestV1,
     auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
 ) -> EventSourceResponse:
-    client = get_service_client()
-    _require_kbs(client, auth.tenant_id, payload.knowledge_base_ids)
-    request_id = str(uuid.uuid4())
-    started = time.perf_counter()
-    query_token_count = count_tokens(payload.query)
-
-    try:
-        prepared = await prepare_query(
-            query=payload.query,
-            tenant_id=auth.tenant_id,
-            knowledge_base_ids=[str(kb_id) for kb_id in payload.knowledge_base_ids],
-            match_count=payload.match_count,
-            rerank=payload.rerank,
-            prompt_name=payload.prompt_name,
-            client=client,
-        )
-    except QueryPipelineError as exc:
-        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
-
-    async def event_generator() -> AsyncIterator[dict[str, str]]:
-        citations = (
-            resolve_citations("", prepared.final_chunks, include_uncited=True)
-            if payload.include_sources
-            else []
-        )
-        yield {
-            "event": "sources",
-            "data": json.dumps(
-                success_payload(
-                    "query.sources_prepared",
-                    request_id=request_id,
-                    citations=[c.model_dump(mode="json") for c in citations],
-                )
-            ),
-        }
-
-        if prepared.declined:
-            stamp_total_latency(prepared)
-            await write_request_log_async(
-                client,
-                tenant_id=auth.tenant_id,
-                integration_id=auth.integration_id,
-                api_key_id=auth.api_key_id,
-                endpoint="/v1/query/stream",
-                method="POST",
-                status_code=200,
-                latency_ms=prepared.retrieval_metadata.latency_ms.total,
-                input_tokens=query_token_count,
-                metadata={"declined": True},
-            )
-            yield {"event": "token", "data": INSUFFICIENT_CONTEXT_MESSAGE}
-            yield {
-                "event": "done",
-                "data": json.dumps(
-                    success_payload(
-                        "query.stream_declined",
-                        request_id=request_id,
-                        declined=True,
-                        retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
-                        usage=_usage_from_texts_cached(query_token_count, "").model_dump(mode="json"),
-                    )
-                ),
-            }
-            return
-
-        answer_parts: list[str] = []
-        try:
-            generator = Generator()
-            gen_started = time.perf_counter()
-            async for token in generator.stream(
-                prompt=prepared.prompt,
-                context=prepared.context,
-                query=payload.query,
-            ):
-                answer_parts.append(token)
-                yield {"event": "token", "data": token}
-        except GenerationError as exc:
-            yield {
-                "event": "error",
-                "data": json.dumps(success_payload("query.stream_generation_failed", detail=str(exc))),
-            }
-            return
-
-        prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
-        stamp_total_latency(prepared)
-        answer = "".join(answer_parts)
-        usage = _usage_from_texts_cached(query_token_count, answer)
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query/stream",
-            method="POST",
-            status_code=200,
-            latency_ms=prepared.retrieval_metadata.latency_ms.total,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            metadata={"knowledge_base_ids": [str(kb_id) for kb_id in payload.knowledge_base_ids]},
-        )
-        yield {
-            "event": "done",
-            "data": json.dumps(
-                success_payload(
-                    "query.stream_completed",
-                    request_id=request_id,
-                    declined=False,
-                    retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
-                    usage=usage.model_dump(mode="json"),
-                )
-            ),
-        }
-
-    return EventSourceResponse(event_generator())
+    return await build_stream_response(
+        payload=payload,
+        auth=auth,
+        client=get_service_client(),
+        endpoint="/v1/query/stream",
+    )
 
 
 @router.post(
@@ -549,120 +304,13 @@ async def query_integration_flat(
     if payload.integration_id and str(payload.integration_id) != auth.integration_id:
         raise_api_error(403, "platform_auth.integration_mismatch")
 
-    started = time.perf_counter()
-    client = get_service_client()
-    request_id = uuid.uuid4()
-    query_token_count = count_tokens(payload.query)
-
-    try:
-        prepared = await prepare_query(
-            query=payload.query,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            match_count=payload.match_count,
-            rerank=payload.rerank,
-            prompt_name=payload.prompt_name,
-            client=client,
-        )
-    except QueryPipelineError as exc:
-        logger.error("v1.query_flat.pipeline_failed", tenant_id=auth.tenant_id, error=str(exc))
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query/integration",
-            method="POST",
-            status_code=500,
-            latency_ms=_elapsed_ms(started),
-            input_tokens=query_token_count,
-            error_code="pipeline_failed",
-        )
-        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
-
-    if prepared.declined:
-        stamp_total_latency(prepared)
-        usage = UsageMetadata(input_tokens=query_token_count)
-        usage.total_tokens = usage.input_tokens
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query/integration",
-            method="POST",
-            status_code=200,
-            latency_ms=prepared.retrieval_metadata.latency_ms.total,
-            input_tokens=usage.input_tokens,
-            output_tokens=0,
-            metadata={"declined": True},
-        )
-        return build_response(
-            IntegrationQueryResponse,
-            "query.declined",
-            request_id=request_id,
-            query=payload.query,
-            answer=INSUFFICIENT_CONTEXT_MESSAGE,
-            citations=[],
-            retrieval_metadata=prepared.retrieval_metadata,
-            declined=True,
-            usage=usage.model_dump(mode="json"),
-        )
-
-    try:
-        generator = Generator()
-        gen_started = time.perf_counter()
-        answer = await generator.generate(
-            prompt=prepared.prompt,
-            context=prepared.context,
-            query=payload.query,
-        )
-    except GenerationError as exc:
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query/integration",
-            method="POST",
-            status_code=500,
-            latency_ms=_elapsed_ms(started),
-            input_tokens=query_token_count,
-            error_code="generation_failed",
-        )
-        raise_api_error(500, "query.generation_failed", detail=str(exc))
-
-    prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
-    stamp_total_latency(prepared)
-    citations = resolve_citations(answer, prepared.final_chunks) if payload.include_sources else []
-    usage = _usage_from_texts_cached(query_token_count, answer)
-    await write_request_log_async(
-        client,
-        tenant_id=auth.tenant_id,
-        integration_id=auth.integration_id,
-        api_key_id=auth.api_key_id,
+    return await execute_query(
+        payload=payload,
+        auth=auth,
+        client=get_service_client(),
+        response_model=IntegrationQueryResponse,
         endpoint="/v1/query/integration",
-        method="POST",
-        status_code=200,
-        latency_ms=prepared.retrieval_metadata.latency_ms.total,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        metadata={
-            "external_user_id": payload.external_user_id,
-            "session_id": payload.session_id,
-            "tags": payload.tags,
-        },
-    )
-    return build_response(
-        IntegrationQueryResponse,
-        "query.completed",
-        request_id=request_id,
-        query=payload.query,
-        answer=answer,
-        citations=citations,
-        retrieval_metadata=prepared.retrieval_metadata,
-        declined=False,
-        usage=usage.model_dump(mode="json"),
+        log_prefix="v1.query_flat",
     )
 
 
@@ -678,118 +326,12 @@ async def query_integration_stream_flat(
     if payload.integration_id and str(payload.integration_id) != auth.integration_id:
         raise_api_error(403, "platform_auth.integration_mismatch")
 
-    client = get_service_client()
-    request_id = str(uuid.uuid4())
-    started = time.perf_counter()
-    query_token_count = count_tokens(payload.query)
-
-    try:
-        prepared = await prepare_query(
-            query=payload.query,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            match_count=payload.match_count,
-            rerank=payload.rerank,
-            prompt_name=payload.prompt_name,
-            client=client,
-        )
-    except QueryPipelineError as exc:
-        raise_api_error(500, "query.pipeline_failed", detail=str(exc))
-
-    async def event_generator() -> AsyncIterator[dict[str, str]]:
-        citations = (
-            resolve_citations("", prepared.final_chunks, include_uncited=True)
-            if payload.include_sources
-            else []
-        )
-        yield {
-            "event": "sources",
-            "data": json.dumps(
-                success_payload(
-                    "query.sources_prepared",
-                    request_id=request_id,
-                    citations=[c.model_dump(mode="json") for c in citations],
-                )
-            ),
-        }
-
-        if prepared.declined:
-            stamp_total_latency(prepared)
-            await write_request_log_async(
-                client,
-                tenant_id=auth.tenant_id,
-                integration_id=auth.integration_id,
-                api_key_id=auth.api_key_id,
-                endpoint="/v1/query/integration/stream",
-                method="POST",
-                status_code=200,
-                latency_ms=prepared.retrieval_metadata.latency_ms.total,
-                input_tokens=query_token_count,
-                metadata={"declined": True},
-            )
-            yield {"event": "token", "data": INSUFFICIENT_CONTEXT_MESSAGE}
-            yield {
-                "event": "done",
-                "data": json.dumps(
-                    success_payload(
-                        "query.stream_declined",
-                        request_id=request_id,
-                        declined=True,
-                        retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
-                        usage=_usage_from_texts_cached(query_token_count, "").model_dump(mode="json"),
-                    )
-                ),
-            }
-            return
-
-        answer_parts: list[str] = []
-        try:
-            generator = Generator()
-            gen_started = time.perf_counter()
-            async for token in generator.stream(
-                prompt=prepared.prompt,
-                context=prepared.context,
-                query=payload.query,
-            ):
-                answer_parts.append(token)
-                yield {"event": "token", "data": token}
-        except GenerationError as exc:
-            yield {
-                "event": "error",
-                "data": json.dumps(success_payload("query.stream_generation_failed", detail=str(exc))),
-            }
-            return
-
-        prepared.retrieval_metadata.latency_ms.generation = _elapsed_ms(gen_started)
-        stamp_total_latency(prepared)
-        answer = "".join(answer_parts)
-        usage = _usage_from_texts_cached(query_token_count, answer)
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint="/v1/query/integration/stream",
-            method="POST",
-            status_code=200,
-            latency_ms=prepared.retrieval_metadata.latency_ms.total,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-        )
-        yield {
-            "event": "done",
-            "data": json.dumps(
-                success_payload(
-                    "query.stream_completed",
-                    request_id=request_id,
-                    declined=False,
-                    retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
-                    usage=usage.model_dump(mode="json"),
-                )
-            ),
-        }
-
-    return EventSourceResponse(event_generator())
+    return await build_stream_response(
+        payload=payload,
+        auth=auth,
+        client=get_service_client(),
+        endpoint="/v1/query/integration/stream",
+    )
 
 
 @router.post("/connectors/s3", response_model=ConnectorSummary, status_code=201, deprecated=True)
@@ -878,47 +420,7 @@ async def list_usage(
     auth: PlatformAuthContext = Depends(require_platform_context("analytics:read")),
 ) -> UsageResponse:
     client = get_service_client()
-    # Cap at ~100 rows/day × requested window. Previously pulled the entire
-    # request_logs table for the tenant (unbounded) and re-sliced in Python
-    # — that is O(total tenant history) per call and will OOM large tenants.
-    rows = _select_rows_limited(
-        client, "request_logs", tenant_id=auth.tenant_id, limit=days * 100
-    )
-    buckets: dict[str, dict[str, Any]] = defaultdict(lambda: {
-        "window_start": None,
-        "request_count": 0,
-        "success_count": 0,
-        "error_count": 0,
-        "total_input_tokens": 0,
-        "total_output_tokens": 0,
-        "latency_total": 0,
-    })
-    for row in rows:
-        key = str(row.get("created_at") or "")[:10]
-        bucket = buckets[key]
-        bucket["window_start"] = _coerce_datetime(row.get("created_at"))
-        bucket["request_count"] += 1
-        bucket["success_count"] += 1 if int(row.get("status_code") or 0) < 400 else 0
-        bucket["error_count"] += 1 if int(row.get("status_code") or 0) >= 400 else 0
-        bucket["total_input_tokens"] += int(row.get("input_tokens") or 0)
-        bucket["total_output_tokens"] += int(row.get("output_tokens") or 0)
-        bucket["latency_total"] += int(row.get("latency_ms") or 0)
-
-    usage_buckets = []
-    for bucket in buckets.values():
-        count = bucket["request_count"] or 1
-        usage_buckets.append(
-            UsageBucket(
-                window_start=bucket["window_start"],
-                request_count=bucket["request_count"],
-                success_count=bucket["success_count"],
-                error_count=bucket["error_count"],
-                total_input_tokens=bucket["total_input_tokens"],
-                total_output_tokens=bucket["total_output_tokens"],
-                avg_latency_ms=round(bucket["latency_total"] / count, 2),
-            )
-        )
-    usage_buckets.sort(key=lambda item: item.window_start.isoformat() if item.window_start else "")
+    usage_buckets = aggregate_usage_buckets(client, tenant_id=auth.tenant_id, days=days)
     return build_response(
         UsageResponse,
         "platform.usage_listed",
@@ -932,24 +434,12 @@ async def list_audit_logs(
     auth: PlatformAuthContext = Depends(require_platform_context("analytics:read")),
 ) -> AuditLogListResponse:
     client = get_service_client()
-    rows = _select_rows_limited(
-        client, "audit_logs", tenant_id=auth.tenant_id, limit=limit
+    entries = list_audit_log_entries(client, tenant_id=auth.tenant_id, limit=limit)
+    return build_response(
+        AuditLogListResponse,
+        "platform.audit_logs_listed",
+        audit_logs=[entry.model_dump(mode="json") for entry in entries],
     )
-    logs = [
-        AuditLogEntry(
-            id=UUID(str(row["id"])),
-            tenant_id=UUID(str(row["tenant_id"])),
-            actor_type=str(row["actor_type"]),
-            actor_id=row.get("actor_id"),
-            action=str(row["action"]),
-            resource_type=row.get("resource_type"),
-            resource_id=row.get("resource_id"),
-            metadata=row.get("metadata") or {},
-            created_at=row.get("created_at"),
-        ).model_dump(mode="json")
-        for row in rows
-    ]
-    return build_response(AuditLogListResponse, "platform.audit_logs_listed", audit_logs=logs)
 
 
 def _create_connector(
@@ -1014,24 +504,6 @@ def _select_rows(client: Any, table: str, *, tenant_id: str) -> list[dict[str, A
         raise_api_error(500, "common.internal_error")
 
 
-def _select_rows_limited(
-    client: Any, table: str, *, tenant_id: str, limit: int
-) -> list[dict[str, Any]]:
-    try:
-        return (
-            client.table(table)
-            .select("*")
-            .eq("tenant_id", tenant_id)
-            .limit(limit)
-            .execute()
-            .data
-            or []
-        )
-    except Exception as exc:
-        logger.error("platform.select_failed", table=table, tenant_id=tenant_id, error=str(exc))
-        raise_api_error(500, "common.internal_error")
-
-
 def _get_row(client: Any, table: str, column: str, value: str, *, tenant_id: str) -> Optional[dict[str, Any]]:
     rows = (
         client.table(table)
@@ -1067,30 +539,6 @@ def _require_kb(client: Any, tenant_id: str, knowledge_base_id: str) -> dict[str
         raise_api_error(404, "platform.knowledge_base_not_found")
     return row
 
-
-def _require_kbs(client: Any, tenant_id: str, knowledge_base_ids: Iterable[UUID]) -> None:
-    ids = [str(kb_id) for kb_id in knowledge_base_ids]
-    if not ids:
-        return
-    # Previously fetched ALL knowledge_bases for the tenant and scanned in
-    # Python — unbounded and slow for large tenants. Filter server-side via
-    # `.in_()` so we only pull the rows we need to validate.
-    try:
-        rows = (
-            client.table("knowledge_bases")
-            .select("id")
-            .eq("tenant_id", tenant_id)
-            .in_("id", ids)
-            .execute()
-            .data
-            or []
-        )
-    except Exception as exc:
-        logger.error("platform.require_kbs_failed", tenant_id=tenant_id, error=str(exc))
-        raise_api_error(500, "common.internal_error")
-    found = {str(row["id"]) for row in rows}
-    if not all(kb_id in found for kb_id in ids):
-        raise_api_error(404, "platform.knowledge_base_not_found")
 
 
 def _kb_summary(row: dict[str, Any], message_key: str = "") -> KnowledgeBaseSummary:
@@ -1140,33 +588,3 @@ def _connector_summary(row: dict[str, Any], message_key: str = "") -> ConnectorS
         created_at=row.get("created_at"),
     )
     return model if not message_key else build_response(ConnectorSummary, message_key, **model.model_dump(mode="json", exclude={"message"}))
-
-
-def _usage_from_texts(query: str, answer: str) -> UsageMetadata:
-    return _usage_from_texts_cached(count_tokens(query), answer)
-
-
-def _usage_from_texts_cached(query_tokens: int, answer: str) -> UsageMetadata:
-    """Variant that reuses a precomputed input-token count — callers on the
-    query hot path previously recomputed ``count_tokens(query)`` up to four
-    times per request (pipeline error, decline, generation error, success)."""
-    usage = UsageMetadata(
-        input_tokens=query_tokens,
-        output_tokens=count_tokens(answer) if answer else 0,
-    )
-    usage.total_tokens = usage.input_tokens + usage.output_tokens
-    usage.estimated_cost_usd = round((usage.total_tokens / 1000) * 0.0002, 6)
-    return usage
-
-
-def _elapsed_ms(started: float) -> int:
-    return int((time.perf_counter() - started) * 1000)
-
-
-def _coerce_datetime(value: Any) -> Optional[datetime]:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str) and value:
-        normalized = value.replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized)
-    return None

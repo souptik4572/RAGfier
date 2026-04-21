@@ -12,6 +12,7 @@ from app.api.auth import AuthContext, get_auth_context
 from app.config import get_settings
 from app.models.database import get_service_client
 from app.models.schemas import (
+    CountResponse,
     EvalRunAcceptedResponse,
     EvalRunListResponse,
     EvalRunRequest,
@@ -69,6 +70,7 @@ async def _run_evaluation_task(
             trigger=trigger,
             client=client,
             persist=True,
+            run_id=run_id,  # reuse the pre-created row; avoids a duplicate create
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("eval.api.run_failed", run_id=run_id, error=str(exc))
@@ -129,7 +131,7 @@ def _schedule_task(
 ) -> None:
     asyncio.run(
         _run_evaluation_task(
-            run_id=run_id,
+            run_id=run_id,        # forward the pre-created run_id
             dataset_path=dataset_path,
             tenant_id=tenant_id,
             trigger=trigger,
@@ -149,6 +151,22 @@ async def list_eval_runs(
     runs = list_runs(client, auth.tenant_id, limit=50)
     summaries = [_run_to_summary(r) for r in runs]
     return build_response(EvalRunListResponse, "eval.runs_listed", runs=summaries)
+
+
+@router.get("/runs/count", response_model=CountResponse)
+async def count_eval_runs(
+    auth: AuthContext = Depends(get_auth_context),
+) -> CountResponse:
+    client = get_service_client()
+    rows = (
+        client.table("eval_runs")
+        .select("id")
+        .eq("tenant_id", auth.tenant_id)
+        .execute()
+        .data
+        or []
+    )
+    return build_response(CountResponse, "eval.runs_counted", count=len(rows))
 
 
 @router.get(

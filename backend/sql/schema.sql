@@ -272,6 +272,7 @@ CREATE TABLE IF NOT EXISTS integrations (
   name TEXT NOT NULL,
   environment TEXT NOT NULL DEFAULT 'production',
   metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+  prompt_name TEXT NOT NULL DEFAULT 'rag_generation_v1',
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );

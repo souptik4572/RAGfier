@@ -1,16 +1,21 @@
 # RAGfier — Hosted RAG API, Platform, and Evaluation Pipeline
 
 Multi-tenant Retrieval-Augmented Generation backbone. Phase 1 ingests
-PDFs/Markdown into Supabase `pgvector` with full citation metadata and
-Row-Level Security. Phase 2 turns that index into a production-quality
-query pipeline: hybrid retrieval (dense + sparse + RRF), cross-encoder
-reranking, and citation-enforced LLM generation with hallucination
-guardrails and SSE streaming. Phase 3 adds an automated evaluation
-pipeline: versioned golden datasets, Ragas-based scoring, custom RAG
-quality metrics, persisted evaluation history, `/eval` APIs, and a
-GitHub Actions quality gate. Phase 4 adds the first hosted-platform
-slice: API-key-based `/v1` APIs, knowledge bases, integrations, managed
-connector records, audit/request logging, and a server SDK.
+PDFs/Markdown into Supabase `pgvector` with full citation metadata,
+section-aware chunking, optional Anthropic-style per-chunk
+contextualization with prompt caching, and Row-Level Security. Phase 2
+turns that index into a production-quality query pipeline: hybrid
+retrieval (dense + sparse + weighted RRF, OpenAI File-Search-style),
+cross-encoder reranking, and citation-enforced LLM generation with
+hallucination guardrails, grounded inference, and SSE streaming.
+Phase 3 adds an automated evaluation pipeline: versioned golden
+datasets, Ragas-based scoring, custom RAG quality metrics, persisted
+evaluation history, `/eval` APIs, and a GitHub Actions quality gate.
+Phase 4 adds the first hosted-platform slice: API-key-based `/v1`
+APIs, knowledge bases, integrations, managed connector records,
+audit/request logging, a server SDK, and a Next.js 15 operator dashboard
+(signup/login, integrations, API keys, document ingest, streaming query
+playground with citations, eval, prompts, audit logs, usage).
 
 See [SPEC.md](SPEC.md) (Phase 3) and [SPEC_Phase1.md](SPEC_Phase1.md) for the
 full technical specs, and [AGENTS.md](AGENTS.md) for coding conventions.
@@ -22,13 +27,16 @@ The repository is split into two top-level workspaces:
 ```
 RAGfier/
 ├── backend/    FastAPI application, evaluation pipeline, SQL, scripts, SDK, tests
-├── frontend/   Frontend application (placeholder — not yet implemented)
+├── frontend/   Next.js 15 operator dashboard (App Router, Tailwind v4, Zustand, TanStack Query)
 └── docker-compose.yml  Single multi-service compose file for the whole stack
 ```
 
-All backend work lives under `backend/`. The frontend workspace is an empty
-placeholder ready to receive a UI implementation that talks to the backend
-through the existing REST/SSE APIs.
+The backend lives under `backend/` and exposes JWT + API-key `/v1` REST and
+SSE surfaces. The frontend under `frontend/` is a production-grade Next.js
+operator dashboard that consumes those APIs — tenant signup/login, integration
+management, API key lifecycle, document ingestion, streaming query playground
+with citations and PDF overlay, eval runs, prompt management, audit logs, and
+usage rollups.
 
 ## Configuration Model
 
@@ -51,24 +59,25 @@ This keeps deploy-time secrets out of source control while making safe defaults 
 ### Ingestion (Phase 1)
 
 ```
-Upload → Supabase Storage → LlamaParse → Chunker → OpenAI Embeddings → pgvector
+Upload → Supabase Storage → LlamaParse → Chunker → Contextualizer (opt-in) → OpenAI Embeddings → pgvector
 ```
 
 - **Parser** — [backend/app/pipeline/parser.py](backend/app/pipeline/parser.py): LlamaParse for PDFs, in-process Markdown parser. Tracks section headings and spatial metadata.
-- **Chunker** — [backend/app/pipeline/chunker.py](backend/app/pipeline/chunker.py): `RecursiveCharacterTextSplitter`, 700-token target / 100 overlap, tiktoken `cl100k_base`. Prepends document title + section heading to every chunk.
+- **Chunker** — [backend/app/pipeline/chunker.py](backend/app/pipeline/chunker.py): `RecursiveCharacterTextSplitter`, 700-token target / 100 overlap, tiktoken `cl100k_base`. Section-aware: consecutive non-heading blocks sharing a `section_heading` and `page_number` are merged before splitting, so short enumerations (resume "Projects" / "Experience", contract paragraphs under one heading) stay in a single chunk — which is what lets superlative and cross-entry comparison queries succeed. Prepends document title + section heading to every chunk for situated context.
+- **Contextualizer** — [backend/app/pipeline/contextualizer.py](backend/app/pipeline/contextualizer.py): Anthropic-style Contextual Retrieval ([Anthropic 2024](https://www.anthropic.com/news/contextual-retrieval)). When enabled, Claude Haiku (`claude-haiku-4-5-20251001` by default) generates a 50-100 token situated context per chunk using Anthropic prompt caching (`cache_control: ephemeral` on the `<document>` block), cutting input-token cost by ~90% on long documents. The summary is prepended as `[Context: ...]` ahead of the original chunk. Opt-in via `CONTEXTUALIZATION_ENABLED=true` + `ANTHROPIC_API_KEY`; disabled by default with graceful fall-back to the original chunk on any Anthropic error so the ingest pipeline never hard-fails on contextualization.
 - **Embedder** — [backend/app/pipeline/embedder.py](backend/app/pipeline/embedder.py): OpenAI `text-embedding-3-small` (1536d), batch size 100, exponential backoff (max 3 retries).
 - **Upserter** — [backend/app/pipeline/upserter.py](backend/app/pipeline/upserter.py): Batch insert into `documents` with full metadata JSONB; updates `ingestion_jobs.status` at every step.
-- **Orchestrator** — [backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py): Coordinates the full parse → chunk → embed → upsert flow under a single `job_id`.
+- **Orchestrator** — [backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py): Coordinates the full parse → chunk → contextualize → embed → upsert flow under a single `job_id`, with a distinct `contextualizing` job-status step when the contextualizer is enabled.
 
 ### Query pipeline (Phase 2)
 
 ```
-Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ RRF) → Rerank → Guardrail → Prompt → LLM → Citations
+Query → Embed → Hybrid Retrieve (dense ∥ sparse ⇒ Weighted RRF) → Rerank → Guardrail → Prompt → LLM → Citations
 ```
 
 - **Dense retrieval** — [backend/app/pipeline/retriever_dense.py](backend/app/pipeline/retriever_dense.py): cosine similarity via `match_documents` (HNSW + `vector_cosine_ops`).
-- **Sparse retrieval** — [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py): BM25-equivalent via Postgres `tsvector` + `websearch_to_tsquery` on a generated `fts` column. The `HybridRetriever` runs both branches + RRF inside the `match_documents_hybrid` SQL function.
-- **Reciprocal Rank Fusion** — [backend/app/pipeline/fusion.py](backend/app/pipeline/fusion.py): pure-Python RRF (`1 / (k + rank)`, `k=60`) used by the in-process fallback path and tests.
+- **Sparse retrieval** — [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py): BM25-equivalent via Postgres `tsvector` + `websearch_to_tsquery` on a generated `fts` column. The `HybridRetriever` runs both branches + RRF inside the `match_documents_hybrid` SQL function, and auto-falls-back to an unweighted call on older databases that don't yet have the weighted RPC.
+- **Reciprocal Rank Fusion (OpenAI-style weighted)** — [backend/app/pipeline/fusion.py](backend/app/pipeline/fusion.py) and [backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql](backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql): weighted RRF implementing the OpenAI "File Search" style formula `(semantic_weight / (k + dense_rank)) + (full_text_weight / (k + sparse_rank))`. Defaults of `SEMANTIC_WEIGHT=0.7` / `FULL_TEXT_WEIGHT=0.3` bias semantic search; tune toward lexical for keyword-heavy corpora (code, SKUs, identifiers). Passing `1.0 / 1.0` reproduces the classic unweighted RRF used by the fallback path.
 - **Reranker** — [backend/app/pipeline/reranker.py](backend/app/pipeline/reranker.py): Cohere `rerank-english-v3.0` primary + local `cross-encoder/ms-marco-MiniLM-L-6-v2` fallback behind a single `Reranker` facade. Auto-falls-back on API failure and reports the provider actually used.
 - **Hallucination guardrail** — [backend/app/pipeline/reranker.py](backend/app/pipeline/reranker.py): declines with the canonical "not enough information" message when the top rerank score is below `RELEVANCE_THRESHOLD`, or when retrieval is empty.
 - **Generator** — [backend/app/pipeline/generator.py](backend/app/pipeline/generator.py): OpenAI `gpt-4o` (configurable) with retry-wrapped `generate()` and async `stream()`; model/temperature/max_tokens are pulled from the prompt config.
@@ -392,7 +401,7 @@ job and every resulting document chunk.
 {
   "query": "What is the liability cap?",
   "integration_id": "uuid-or-omitted",
-  "match_count": 5,
+  "match_count": 8,
   "rerank": true,
   "include_sources": true,
   "prompt_name": "rag_generation_v1",
@@ -470,6 +479,18 @@ The `sources` event lets a frontend render citation cards while tokens stream
 in. Declines emit a single synthetic `token` event followed by `done` with
 `declined: true`.
 
+All heavy work (integration resolution, embedding, retrieval, rerank, prompt
+assembly) happens inside the SSE generator, so failures surface as an `error`
+event followed by a terminal `done`, rather than a pre-stream HTTP 500:
+
+```
+event: error
+data: {"message": "Query pipeline failed", "detail": "<exception text>"}
+
+event: done
+data: {"message": "Query stream generation failed", "declined": false}
+```
+
 #### Error response shape
 
 ```json
@@ -485,8 +506,8 @@ validation error, `500` internal error.
 
 Representative error message keys: `auth.missing_bearer_token`,
 `auth.missing_organization_id`, `platform_auth.invalid_api_key`,
-`platform_auth.insufficient_scope`, `integration.integration_not_found`,
-`document.document_not_found`, `ingest.file_too_large`, `query.pipeline_failed`.
+`platform_auth.insufficient_scope`, `platform.integration_not_found`,
+`platform.document_not_found`, `ingest.file_too_large`, `query.pipeline_failed`.
 
 ### `/eval` API workflow
 
@@ -519,13 +540,14 @@ RAGfier/
 │   │   │   └── health.py            GET /health
 │   │   ├── pipeline/
 │   │   │   ├── parser.py            LlamaParse + MD
-│   │   │   ├── chunker.py           recursive character splitter
+│   │   │   ├── chunker.py           section-aware recursive character splitter
+│   │   │   ├── contextualizer.py    Anthropic contextual retrieval (prompt-cached, opt-in)
 │   │   │   ├── embedder.py          OpenAI batch embeddings
 │   │   │   ├── upserter.py          Supabase batch upsert
 │   │   │   ├── orchestrator.py      ingestion orchestrator
 │   │   │   ├── retriever_dense.py   pgvector cosine (integration-scoped)
-│   │   │   ├── retriever_sparse.py  tsvector BM25 + HybridRetriever (integration-scoped)
-│   │   │   ├── fusion.py            Reciprocal Rank Fusion
+│   │   │   ├── retriever_sparse.py  tsvector BM25 + HybridRetriever (integration-scoped, weighted RRF)
+│   │   │   ├── fusion.py            Reciprocal Rank Fusion (weighted + unweighted)
 │   │   │   ├── reranker.py          Cohere + local cross-encoder
 │   │   │   ├── generator.py         gpt-4o generation + streaming
 │   │   │   ├── citation_resolver.py [SOURCE_N] assembly + resolution
@@ -571,14 +593,62 @@ RAGfier/
 │   │   ├── reset-environment.sh     purge bucket then truncate DB
 │   │   ├── truncate-all-tables.sh   destructive DB reset helper
 │   │   └── purge-supabase-bucket.py backward-compatible wrapper for package CLI
-│   ├── tests/                       69 tests — all unit and integration coverage
+│   ├── tests/                       76 tests — all unit and integration coverage
 │   ├── Dockerfile                   backend container image
 │   ├── requirements.txt
 │   ├── pyproject.toml
 │   └── .env.example
-├── frontend/                        Frontend workspace (placeholder)
-│   └── .gitkeep
-├── docker-compose.yml               Multi-service compose: migrate + backend + frontend stub
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── layout.tsx               Root layout (Metadata, Viewport, Outfit font)
+│   │   │   ├── global-error.tsx         Top-level failure renderer
+│   │   │   ├── error.tsx                Route-level error boundary
+│   │   │   ├── not-found.tsx            404 page
+│   │   │   ├── loading.tsx              Skeleton placeholder
+│   │   │   ├── icon.svg / apple-icon.svg
+│   │   │   ├── (auth)/
+│   │   │   │   ├── login/               POST /auth/login form
+│   │   │   │   ├── signup/              POST /auth/signup form
+│   │   │   │   └── error.tsx            Auth-area error boundary
+│   │   │   └── (dashboard)/
+│   │   │       ├── layout.tsx           Sidebar + Topbar + skip-link shell
+│   │   │       ├── error.tsx            Dashboard error boundary
+│   │   │       ├── loading.tsx          Dashboard skeleton
+│   │   │       ├── dashboard/           Home overview
+│   │   │       ├── integrations/        List + [id]/documents + [id]/playground
+│   │   │       ├── api-keys/            Platform API key management
+│   │   │       ├── prompts/             Prompt versioning UI
+│   │   │       ├── eval/                Eval runs + [runId] drill-down
+│   │   │       ├── audit-logs/          /v1/audit-logs viewer
+│   │   │       └── usage/               /v1/usage rollups
+│   │   ├── components/
+│   │   │   ├── ui/                      Radix + shadcn primitives (Button, Input, Select, Dialog…)
+│   │   │   ├── layout/                  Sidebar, Topbar, PageHeader, Breadcrumbs
+│   │   │   ├── auth/                    Signup/login forms (react-hook-form + zod)
+│   │   │   ├── integrations/            Create/edit/delete integration dialogs
+│   │   │   ├── documents/               UploadDropzone, DocumentList
+│   │   │   ├── chat/                    ChatWindow (SSE streaming, citations, PDF overlay)
+│   │   │   ├── api-keys/                ApiKeyTable, CreateApiKeyDialog, SecretRevealBanner
+│   │   │   ├── eval/                    EvalRunCard, EvalSampleTable, StartEvalRunDialog
+│   │   │   ├── prompts/                 CreatePromptDialog, PromptDetail
+│   │   │   ├── audit/                   AuditLogTable
+│   │   │   └── shared/                  EmptyState, ConfirmDialog, Skeleton, ErrorBoundary, CopyButton
+│   │   ├── lib/
+│   │   │   ├── api/                     ky-based typed clients for each backend surface
+│   │   │   ├── store/                   Zustand auth/UI/chat stores
+│   │   │   ├── hooks/                   TanStack Query hooks + SSE stream hook
+│   │   │   └── schemas/                 Zod request/response schemas
+│   │   └── styles/globals.css           Tailwind v4 + focus-visible ring + skip-link + reduced-motion
+│   ├── public/robots.txt                Operator SaaS — no indexing
+│   ├── Dockerfile                       Multi-stage Next.js standalone build
+│   ├── .dockerignore
+│   ├── next.config.ts                   output: 'standalone' for Docker
+│   ├── tailwind.config.ts
+│   ├── tsconfig.json
+│   ├── package.json
+│   └── .env.local.example               NEXT_PUBLIC_API_URL
+├── docker-compose.yml               Multi-service compose: migrate + backend + frontend
 └── README.md
 ```
 
@@ -599,6 +669,11 @@ cp .env.example .env
 # Phase 2:  COHERE_API_KEY (or set RERANKER_PROVIDER=local)
 #           GENERATION_MODEL, GENERATION_TEMPERATURE, GENERATION_MAX_TOKENS
 #           DENSE_TOP_N, SPARSE_TOP_N, RRF_K, RERANK_TOP_K, RELEVANCE_THRESHOLD
+#           SEMANTIC_WEIGHT, FULL_TEXT_WEIGHT   (OpenAI-style weighted RRF)
+# Phase 2+: ANTHROPIC_API_KEY, CONTEXTUALIZATION_ENABLED,
+#           CONTEXTUALIZER_MODEL, CONTEXTUALIZER_MAX_TOKENS,
+#           CONTEXTUALIZER_MAX_CONCURRENCY, CONTEXTUALIZER_MAX_DOC_CHARS
+#           (opt-in Anthropic contextual retrieval with prompt caching)
 # Phase 3:  EVAL_DATASET_PATH, EVAL_THRESHOLDS_PATH, EVAL_LLM_JUDGE,
 #           EVAL_FAITHFULNESS_LLM, EVAL_MAX_CONCURRENCY,
 #           EVAL_LATENCY_BUDGET_MS, EVAL_REPORTS_DIR
@@ -694,16 +769,45 @@ docker compose up --build --force-recreate
 
 ### Frontend service
 
-The `frontend` service is defined but commented out in `docker-compose.yml`.
-Once the frontend is implemented under `frontend/`, uncomment that block and
-fill in the correct `build.dockerfile` path. The stub is pre-wired with:
+The `frontend` service is active in `docker-compose.yml` and builds the
+Next.js operator dashboard via [frontend/Dockerfile](frontend/Dockerfile) — a
+multi-stage build that outputs a standalone Next.js server (`output:
+'standalone'`) and runs as a non-root user under Node 22 alpine. The
+`NEXT_PUBLIC_API_URL` value is baked in at build time (client bundles inline
+public env vars) and is propagated from `.env`:
 
 ```yaml
-environment:
-  - NEXT_PUBLIC_API_URL=http://backend:8000
-depends_on:
-  - backend
+frontend:
+  build:
+    context: ./frontend
+    dockerfile: Dockerfile
+    args:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+  ports:
+    - "3000:3000"
+  environment:
+    - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    - NODE_ENV=production
+  depends_on:
+    - backend
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
 ```
+
+Run only the frontend image:
+
+```bash
+docker compose up --build frontend
+```
+
+When calling the backend from a browser on your host (not inside the
+container), set `NEXT_PUBLIC_API_URL=http://localhost:8000` in the root `.env`
+so the build-arg resolves to the host-reachable URL.
 
 ### Common Docker gotchas
 
@@ -821,7 +925,7 @@ Before using any of these scripts:
 - Confirm `backend/.env` points at the intended environment
 - Treat these commands as destructive and non-routine
 
-### Truncate all application tables
+### Truncate all application tables and delete all users
 
 SQL source:
 
@@ -838,10 +942,10 @@ chmod +x scripts/truncate-all-tables.sh
 Behavior:
 
 - Loads `backend/.env`
-- Requires `SUPABASE_DB_URL`
-- Executes the SQL file with `psql`
-- Falls back to a disposable `postgres:16-alpine` container if `psql` is not installed
-- Truncates `eval_sample_results`, `eval_runs`, `prompt_versions`, `documents`, `ingestion_jobs`, and `tenants`
+- Requires `SUPABASE_DB_URL`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`
+- Requires `curl` and `jq` on `PATH` for the user-deletion step
+- Step 1 — executes the SQL file with `psql`, falling back to a disposable `postgres:16-alpine` container if `psql` is not installed; truncates `eval_sample_results`, `eval_runs`, `prompt_versions`, `documents`, `ingestion_jobs`, and `tenants`
+- Step 2 — paginates `GET /auth/v1/admin/users` and issues `DELETE /auth/v1/admin/users/{id}` for every Supabase Auth user until none remain; aborts on the first non-2xx response
 
 ### Empty the Supabase Storage bucket
 
@@ -915,11 +1019,14 @@ reranker — no network, no real API keys, no Cohere/`sentence-transformers`
 install required for the unit suite. The DeepEval suite is separate and
 intended for Phase 3 quality gating. See [backend/tests/fakes.py](backend/tests/fakes.py).
 
-Suite: **69 tests** — parser, chunker, embedder, ingestion pipeline, API,
-RRF fusion, reranker fallback, generator (sync + streaming), citation
-resolver, prompt loader precedence, evaluation runner/API/custom metrics,
-hosted platform auth, `/v1` knowledge bases/documents/connectors/query,
-SDK coverage, and end-to-end `/query`, `/query/stream`, and `/prompts`
+Suite: **76 tests** — parser, chunker (including section-aware grouping
+and cross-section isolation), contextualizer (disabled-by-default no-op,
+prompt-cached Claude Haiku call, API-error fallback), embedder,
+ingestion pipeline, API, RRF fusion (classic + OpenAI-style weighted),
+reranker fallback, generator (sync + streaming), citation resolver,
+prompt loader precedence, evaluation runner/API/custom metrics, hosted
+platform auth, `/v1` knowledge bases/documents/connectors/query, SDK
+coverage, and end-to-end `/query`, `/query/stream`, and `/prompts`
 round-trip.
 
 ## Phase 3 Evaluation Workflow
@@ -1001,12 +1108,16 @@ Every chunk in `documents.metadata` contains the full citation payload:
   "parser": "llamaparse",
   "chunk_strategy": "recursive_character",
   "chunk_size_tokens": 700,
-  "overlap_tokens": 100
+  "overlap_tokens": 100,
+  "contextualized": true
 }
 ```
 
 Missing values are stored as `null` — never dropped. The resolver preserves
-all of this on every `Citation` returned from `/query`.
+all of this on every `Citation` returned from `/query`. The optional
+`contextualized` flag is set to `true` when the Anthropic contextualizer
+ran against the chunk; `ChunkMetadata` keeps `extra="allow"` so the flag
+round-trips without a schema migration.
 
 ## Multi-Tenancy
 
@@ -1078,6 +1189,129 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## Frontend
+
+The operator dashboard is a Next.js 15 App Router application that consumes
+the backend JWT and API-key surfaces. It is the primary UI for tenants to
+manage integrations, ingest documents, stream queries against a knowledge
+base with live citations, inspect evaluation runs, manage prompt versions,
+and audit request history.
+
+### Tech stack
+
+| Layer | Choice |
+|-------|--------|
+| Framework | Next.js 15 (App Router, React 19, `output: 'standalone'`, Turbopack build) |
+| Styling | Tailwind CSS v4 (via `@tailwindcss/postcss`), CSS variables, Outfit web font |
+| UI primitives | shadcn/ui components over Radix UI (Dialog, Select, Label, Separator, Checkbox, Toast) |
+| Forms | `react-hook-form` + `zod` + `@hookform/resolvers` |
+| Data fetching | `@tanstack/react-query` for queries/mutations |
+| HTTP client | `ky` (timeouts, retries, JWT + API-key injection) |
+| Streaming | Native `fetch` + `ReadableStream` for SSE (`sources` → `token`… → `done`) |
+| Client state | `zustand` for auth session, UI, and chat stores |
+| Icons | `lucide-react` |
+| Toasts | `sonner` |
+| Notifications | `@radix-ui/react-toast` |
+
+### Quickstart
+
+```bash
+cd frontend
+
+# 1. Install
+npm ci
+
+# 2. Configure
+cp .env.local.example .env.local
+# .env.local contents:
+# NEXT_PUBLIC_API_URL=http://localhost:8000
+
+# 3. Dev server (Turbopack)
+npm run dev                # http://localhost:3000
+
+# 4. Production build
+npm run build              # .next/standalone + .next/static
+npm run start              # serve the standalone build
+
+# 5. Quality gates
+npm run lint
+npm run typecheck
+```
+
+### Environment
+
+Client-reachable config lives in `frontend/.env.local`. Only `NEXT_PUBLIC_*`
+values are shipped to the browser.
+
+```dotenv
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+In Docker, `NEXT_PUBLIC_API_URL` is a build arg because Next.js inlines
+`NEXT_PUBLIC_*` values at build time — rebuild the image whenever the API
+URL changes.
+
+### Feature surfaces
+
+- **Auth** — signup/login against `/auth/signup` and `/auth/login`; JWT
+  persisted in `zustand` auth store and forwarded by the `ky` client.
+- **Integrations** — list + create + edit + delete against
+  `/platform/integrations`. Default global integration is pinned first.
+- **API keys** — list, create (secret shown exactly once via
+  `SecretRevealBanner`), revoke. Scopes picker maps to
+  `query:read` / `documents:read` / `documents:write` / `kb:read` /
+  `kb:write` / `analytics:read`. Includes a code-example dialog generating
+  ready-to-paste `curl` and Python snippets.
+- **Documents** — drag-and-drop ingest via `UploadDropzone`, job progress
+  polling against `/status/{job_id}`, and a `DocumentList` showing chunk
+  counts and source types.
+- **Playground** — full chat UI over `/v1/integrations/{id}/query/stream`.
+  Renders `sources` as citation cards before tokens begin, streams tokens
+  progressively, and supports a PDF overlay that opens the source chunk
+  against its page + bounding box.
+- **Eval** — start runs, list recent runs, drill into per-sample results.
+- **Prompts** — list versions, create new ones, view the active row per
+  `(tenant_id, name)`.
+- **Audit logs + Usage** — paginated views over `/v1/audit-logs` and
+  `/v1/usage`.
+
+### Accessibility
+
+- Global keyboard focus ring (`*:focus-visible { box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 4px #3B82F6 }`) overrides the DESIGN.md "no shadows" rule for keyboard users only.
+- Skip-to-content link jumps past the sidebar on Tab.
+- Dashboard `<main>` is `tabIndex={-1}` and focus-target of the skip link.
+- `aria-current="page"` on the active sidebar nav.
+- Every dialog exposes an `aria-label`'d close button; selects and textareas are labelled.
+- `role="alert"` / `aria-live` regions on error boundaries and streaming.
+- `@media (prefers-reduced-motion: reduce)` neutralises animations.
+- Colours meet WCAG AA contrast against the light `#FFFFFF` / `#F3F4F6` canvas.
+
+### Error boundaries and loading states
+
+- `app/global-error.tsx` — top-level failure renderer (inline styles, because it replaces the root layout).
+- `app/error.tsx` / `app/(dashboard)/error.tsx` / `app/(auth)/error.tsx` — route-segment error boundaries with retry buttons and environment-aware error-message pre-blocks.
+- `app/not-found.tsx` — 404 with a link back to the dashboard.
+- `app/loading.tsx` / `app/(dashboard)/loading.tsx` — `role="status"` skeleton placeholders.
+- `components/shared/ErrorBoundary.tsx` — React class boundary used around widget-level failures (e.g. the chat window on the playground page) so a single stream error doesn't blow up the whole route.
+- `components/shared/Skeleton.tsx` — `Skeleton`, `TextSkeleton`, `TableSkeleton` utilities used throughout the app during fetches.
+
+### Docker
+
+The multi-stage [frontend/Dockerfile](frontend/Dockerfile) produces a
+Next.js standalone image:
+
+- `deps` stage → `npm ci` against `package-lock.json`
+- `builder` stage → `next build --turbopack` with `output: 'standalone'`, `NEXT_PUBLIC_API_URL` baked in via `--build-arg`
+- `runner` stage → non-root `nextjs:nodejs` user, `HEALTHCHECK` via `wget`, `CMD ["node", "server.js"]`
+
+Build standalone locally without Docker:
+
+```bash
+cd frontend
+npm run build
+node .next/standalone/server.js
+```
+
 ## Prompt Management
 
 Prompts are versioned in `prompt_versions` with audit-friendly history: every
@@ -1098,10 +1332,26 @@ max_tokens: ${generation_max_tokens}
 Those values are resolved through the same settings chain above, so prompt
 files can stay declarative without duplicating non-sensitive defaults.
 
-The system prompt hard-constrains the LLM to the provided context, requires
-`[SOURCE_N]` anchors on every factual claim, and mandates an exact decline
-message when the context is insufficient — this is the second layer of
-hallucination defence on top of the relevance-threshold short-circuit.
+The default prompt ([backend/prompts/rag_generation_v1.yaml](backend/prompts/rag_generation_v1.yaml))
+hard-constrains the LLM to the provided context and requires `[SOURCE_N]`
+anchors on every factual claim, but also enables **grounded reasoning** so
+the model can answer realistic questions that require light inference
+over the cited evidence:
+
+- **Temporal reasoning** — treat an entry with "Jan 2024 – Present" as
+  the current role/company when a user asks "where does X work now?"
+- **Ranking / superlatives** — compare enumerated items in the retrieved
+  chunks (e.g. "best project") and justify the choice from explicit
+  attributes in the evidence.
+- **Aggregation** — count or compare items that are all present in
+  context (e.g. "how many projects has X shipped?").
+- **Synonym resolution** — align query phrasing with context phrasing
+  ("current employer" ≈ "present role").
+
+When the retrieved context genuinely does not support an answer — even
+with the above reasoning — the prompt mandates the canonical decline
+message. This is the second layer of hallucination defence on top of the
+relevance-threshold short-circuit in the retrieval pipeline.
 
 ## Phase 1 Deliverables — Status
 
@@ -1130,6 +1380,20 @@ hallucination defence on top of the relevance-threshold short-circuit.
 | 8 | Prompt management (`/prompts` + YAML fallback) | Done |
 | 9 | Per-step latency tracking in response metadata | Done |
 | 10 | Phase 2 test suite | Done |
+
+## Retrieval Quality Enhancements — Status
+
+Targeted upgrades that close the gap on realistic user questions (superlatives, "current" queries, enumeration). Delivered alongside Phase 2.
+
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | Section-aware chunk grouping (keeps short enumerated sections in one chunk) | Done ([backend/app/pipeline/chunker.py](backend/app/pipeline/chunker.py), [backend/tests/test_chunker.py](backend/tests/test_chunker.py)) |
+| 2 | OpenAI File-Search-style weighted RRF in SQL + Python client with backward-compat fallback | Done ([backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql](backend/sql/migrations/202604180005_weighted_hybrid_rrf.sql), [backend/app/pipeline/fusion.py](backend/app/pipeline/fusion.py), [backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py)) |
+| 3 | Anthropic contextual retrieval with prompt caching (`cache_control: ephemeral`) | Done ([backend/app/pipeline/contextualizer.py](backend/app/pipeline/contextualizer.py), [backend/tests/test_contextualizer.py](backend/tests/test_contextualizer.py)) |
+| 4 | Contextualizer wiring in ingestion orchestrator with `contextualizing` job status | Done ([backend/app/pipeline/orchestrator.py](backend/app/pipeline/orchestrator.py)) |
+| 5 | Softened generation prompt allowing grounded reasoning (temporal / ranking / aggregation / synonym) | Done ([backend/prompts/rag_generation_v1.yaml](backend/prompts/rag_generation_v1.yaml)) |
+| 6 | Retrieval depth tuning: `rerank_top_k` default 5 → 8, API `match_count` default 5 → 8 | Done ([backend/app/config.py](backend/app/config.py), [backend/app/models/schemas.py](backend/app/models/schemas.py)) |
+| 7 | Graceful fallback to unweighted RRF when the weighted RPC is not yet migrated | Done ([backend/app/pipeline/retriever_sparse.py](backend/app/pipeline/retriever_sparse.py)) |
 
 ## Phase 3 Deliverables — Status
 
@@ -1164,7 +1428,7 @@ hallucination defence on top of the relevance-threshold short-circuit.
 | 10 | Python server SDK | Done |
 | 11 | Secure API key hashing + encrypted connector config | Done |
 | 12 | Repository split into `backend/` + `frontend/` workspaces | Done |
-| 13 | Multi-service `docker-compose.yml` with frontend stub | Done |
-| 14 | Full dashboard UI | Not yet implemented |
+| 13 | Multi-service `docker-compose.yml` orchestrating migrate + backend + frontend | Done |
+| 14 | Full dashboard UI (Next.js 15 operator console) | Done ([frontend/src/app/](frontend/src/app/), [frontend/src/components/](frontend/src/components/)) — signup/login, integrations, API keys, document ingest, streaming playground with citations + PDF overlay, eval, prompts, audit logs, usage; error boundaries, loading skeletons, WCAG AA focus rings, standalone Docker build |
 | 15 | Durable connector execution workers | Not yet implemented |
 | 16 | Browser/widget delivery + PDF overlay UX | Not yet implemented |

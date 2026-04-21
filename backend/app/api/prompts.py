@@ -14,6 +14,7 @@ from app.models.schemas import (
 )
 from app.utils.api_errors import build_response, raise_api_error, with_message
 from app.utils.logger import get_logger
+from app.utils.prompt_loader import PromptNotFoundError, _prompts_dir, load_prompt
 
 logger = get_logger(__name__)
 
@@ -32,7 +33,52 @@ def _rows_to_summaries(rows: list[Dict[str, Any]]) -> list[PromptSummary]:
                 is_active=bool(row.get("is_active")),
                 tenant_id=UUID(str(row["tenant_id"])) if row.get("tenant_id") else None,
                 metadata=row.get("metadata") or {},
+                source="database",
                 created_at=row.get("created_at"),
+                system_prompt=row.get("system_prompt"),
+                user_prompt_template=row.get("user_prompt_template"),
+            )
+        )
+    return summaries
+
+
+def _yaml_prompt_summaries(existing_names: set[str]) -> list[PromptSummary]:
+    """Enumerate YAML-sourced prompt defaults not already covered by DB rows.
+
+    YAML prompts have no DB id, so we expose them with ``id=None`` and
+    ``source="yaml"``. Resolution at query time still prefers DB overrides
+    (see :func:`app.utils.prompt_loader.load_prompt`), so surfacing these is
+    purely for the frontend dropdown to know the defaults exist.
+    """
+    summaries: list[PromptSummary] = []
+    prompts_dir = _prompts_dir()
+    if not prompts_dir.exists():
+        return summaries
+    for path in sorted(prompts_dir.glob("*.yaml")):
+        name = path.stem
+        if name in existing_names:
+            continue
+        try:
+            # Passing client=None forces the YAML branch, which also resolves
+            # ``${setting}`` placeholders (model / temperature / max_tokens)
+            # against runtime config — otherwise the UI shows the literal
+            # "${generation_model}" string.
+            data = load_prompt(name)
+        except PromptNotFoundError:
+            continue
+        summaries.append(
+            PromptSummary(
+                message="",
+                id=None,
+                name=data.get("name", name),
+                version=int(data.get("version") or 1),
+                is_active=True,
+                tenant_id=None,
+                metadata=data.get("metadata") or {},
+                source="yaml",
+                created_at=None,
+                system_prompt=data.get("system_prompt"),
+                user_prompt_template=data.get("user_prompt_template"),
             )
         )
     return summaries
@@ -65,10 +111,13 @@ async def list_prompts(
         logger.error("prompts.list_failed", tenant_id=auth.tenant_id, error=str(exc))
         raise_api_error(500, "prompts.list_failed")
 
+    db_summaries = _rows_to_summaries(list(tenant_rows) + list(global_rows or []))
+    existing_names = {s.name for s in db_summaries}
+    yaml_summaries = _yaml_prompt_summaries(existing_names)
     return build_response(
         PromptListResponse,
         "prompts.listed",
-        prompts=_rows_to_summaries(list(tenant_rows) + list(global_rows or []))
+        prompts=db_summaries + yaml_summaries,
     )
 
 
