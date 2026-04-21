@@ -70,6 +70,7 @@ async def _run_evaluation_task(
             trigger=trigger,
             client=client,
             persist=True,
+            run_id=run_id,  # reuse the pre-created row; avoids a duplicate create
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("eval.api.run_failed", run_id=run_id, error=str(exc))
@@ -130,7 +131,7 @@ def _schedule_task(
 ) -> None:
     asyncio.run(
         _run_evaluation_task(
-            run_id=run_id,
+            run_id=run_id,        # forward the pre-created run_id
             dataset_path=dataset_path,
             tenant_id=tenant_id,
             trigger=trigger,
