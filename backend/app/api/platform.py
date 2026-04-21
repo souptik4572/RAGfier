@@ -37,6 +37,35 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/platform", tags=["platform"])
 
 
+def _integration_fields(row: dict[str, Any], default_prompt_name: str) -> dict[str, Any]:
+    """Shared projection from a raw ``integrations`` row to IntegrationSummary kwargs."""
+    return {
+        "id": UUID(str(row["id"])),
+        "tenant_id": UUID(str(row["tenant_id"])),
+        "name": row["name"],
+        "environment": row.get("environment") or "production",
+        "metadata": row.get("metadata") or {},
+        "prompt_name": row.get("prompt_name") or default_prompt_name,
+        "created_at": row.get("created_at"),
+    }
+
+
+def _api_key_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Shared projection from a raw ``api_keys`` row to ApiKeySummary kwargs."""
+    return {
+        "id": UUID(str(row["id"])),
+        "tenant_id": UUID(str(row["tenant_id"])),
+        "integration_id": UUID(str(row["integration_id"])),
+        "name": row["name"],
+        "prefix": row["prefix"],
+        "scopes": row.get("scopes") or [],
+        "status": row["status"],
+        "expires_at": row.get("expires_at"),
+        "last_used_at": row.get("last_used_at"),
+        "created_at": row.get("created_at"),
+    }
+
+
 @router.post("/integrations", response_model=IntegrationSummary, status_code=201)
 async def create_integration(
     payload: IntegrationCreateRequest,
@@ -75,13 +104,7 @@ async def create_integration(
     return build_response(
         IntegrationSummary,
         "platform.integration_created",
-        id=UUID(str(row["id"])),
-        tenant_id=UUID(str(row["tenant_id"])),
-        name=row["name"],
-        environment=row["environment"],
-        metadata=row.get("metadata") or {},
-        prompt_name=row.get("prompt_name") or settings.default_prompt_name,
-        created_at=row.get("created_at"),
+        **_integration_fields(row, settings.default_prompt_name),
     )
 
 
@@ -98,13 +121,7 @@ async def list_integrations(
         integrations=[
             IntegrationSummary(
                 message="",
-                id=UUID(str(row["id"])),
-                tenant_id=UUID(str(row["tenant_id"])),
-                name=row["name"],
-                environment=row.get("environment") or "production",
-                metadata=row.get("metadata") or {},
-                prompt_name=row.get("prompt_name") or settings.default_prompt_name,
-                created_at=row.get("created_at"),
+                **_integration_fields(row, settings.default_prompt_name),
             ).model_dump(mode="json")
             for row in rows
         ],
@@ -170,18 +187,10 @@ async def get_integration(
     )
     if not rows:
         raise_api_error(404, "platform.integration_not_found")
-    row = rows[0]
-    settings = get_settings()
     return build_response(
         IntegrationSummary,
         "platform.integration_fetched",
-        id=UUID(str(row["id"])),
-        tenant_id=UUID(str(row["tenant_id"])),
-        name=row["name"],
-        environment=row.get("environment") or "production",
-        metadata=row.get("metadata") or {},
-        prompt_name=row.get("prompt_name") or settings.default_prompt_name,
-        created_at=row.get("created_at"),
+        **_integration_fields(rows[0], get_settings().default_prompt_name),
     )
 
 
@@ -239,17 +248,8 @@ async def create_api_key(
     return build_response(
         ApiKeyCreateResponse,
         "platform.api_key_created",
-        id=UUID(str(row["id"])),
-        tenant_id=UUID(str(row["tenant_id"])),
-        integration_id=UUID(str(row["integration_id"])),
-        name=row["name"],
-        prefix=row["prefix"],
         secret=secret,
-        scopes=row.get("scopes") or [],
-        status=row["status"],
-        expires_at=row.get("expires_at"),
-        last_used_at=row.get("last_used_at"),
-        created_at=row.get("created_at"),
+        **_api_key_fields(row),
     )
 
 
@@ -263,19 +263,7 @@ async def list_api_keys(
         ApiKeyListResponse,
         "platform.api_keys_listed",
         api_keys=[
-            ApiKeySummary(
-                message="",
-                id=UUID(str(row["id"])),
-                tenant_id=UUID(str(row["tenant_id"])),
-                integration_id=UUID(str(row["integration_id"])),
-                name=row["name"],
-                prefix=row["prefix"],
-                scopes=row.get("scopes") or [],
-                status=row["status"],
-                expires_at=row.get("expires_at"),
-                last_used_at=row.get("last_used_at"),
-                created_at=row.get("created_at"),
-            ).model_dump(mode="json")
+            ApiKeySummary(message="", **_api_key_fields(row)).model_dump(mode="json")
             for row in rows
         ],
     )
@@ -311,20 +299,9 @@ async def revoke_api_key(
         resource_type="api_key",
         resource_id=str(api_key_id),
     )
-    return build_response(
-        ApiKeySummary,
-        "platform.api_key_revoked",
-        id=UUID(str(row["id"])),
-        tenant_id=UUID(str(row["tenant_id"])),
-        integration_id=UUID(str(row["integration_id"])),
-        name=row["name"],
-        prefix=row["prefix"],
-        scopes=row.get("scopes") or [],
-        status="revoked",
-        expires_at=row.get("expires_at"),
-        last_used_at=row.get("last_used_at"),
-        created_at=row.get("created_at"),
-    )
+    fields = _api_key_fields(row)
+    fields["status"] = "revoked"
+    return build_response(ApiKeySummary, "platform.api_key_revoked", **fields)
 
 
 @router.patch("/integrations/{integration_id}", response_model=IntegrationSummary)
@@ -381,7 +358,6 @@ async def update_integration(
         or []
     )
     row = refreshed[0] if refreshed else existing[0]
-    settings = get_settings()
 
     write_audit_log(
         client,
@@ -396,13 +372,7 @@ async def update_integration(
     return build_response(
         IntegrationSummary,
         "platform.integration_updated",
-        id=UUID(str(row["id"])),
-        tenant_id=UUID(str(row["tenant_id"])),
-        name=row["name"],
-        environment=row.get("environment") or "production",
-        metadata=row.get("metadata") or {},
-        prompt_name=row.get("prompt_name") or settings.default_prompt_name,
-        created_at=row.get("created_at"),
+        **_integration_fields(row, get_settings().default_prompt_name),
     )
 
 

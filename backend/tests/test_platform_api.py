@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
+from app.api import _query_shared as query_shared_module
 from app.api import platform as platform_module
 from app.api import public_v1 as public_v1_module
 from app.api.auth import AuthContext, get_auth_context
@@ -125,7 +126,7 @@ def client(monkeypatch, fake_db: FakeSupabaseClient) -> TestClient:
         response_text="The liability cap is $1,000,000 [SOURCE_1]."
     )
     fake_openai.chat.completions.stream_tokens = ["The", " cap", " is", " $1M", " [SOURCE_1]"]
-    monkeypatch.setattr(public_v1_module, "Generator", lambda *_, **__: generator_module.Generator(client=fake_openai))
+    monkeypatch.setattr(query_shared_module, "Generator", lambda *_, **__: generator_module.Generator(client=fake_openai))
 
     class _IdentityBackend:
         provider = "identity"

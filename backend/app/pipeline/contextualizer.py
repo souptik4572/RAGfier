@@ -45,10 +45,6 @@ _CHUNK_PROMPT_SUFFIX = (
 )
 
 
-class ContextualizerError(RuntimeError):
-    """Raised when contextualization is requested but cannot be performed."""
-
-
 class Contextualizer:
     """Prepend per-chunk situated context using Claude Haiku + prompt caching.
 
