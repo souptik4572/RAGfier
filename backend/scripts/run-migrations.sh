@@ -32,7 +32,7 @@ if command -v docker >/dev/null 2>&1; then
     -v "$ROOT_DIR:/app" \
     -w /app \
     -e DATABASE_URL \
-    -e DBMATE_MIGRATIONS_DIR \
+    -e "DBMATE_MIGRATIONS_DIR=/app/sql/migrations" \
     -e DBMATE_NO_DUMP_SCHEMA \
     ghcr.io/amacneil/dbmate "$@"
 fi

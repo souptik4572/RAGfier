@@ -652,6 +652,46 @@ RAGfier/
 └── README.md
 ```
 
+## Local Development Script
+
+[dev.sh](dev.sh) is the single-command way to run the full stack locally. It
+handles every step automatically:
+
+1. Validates `backend/.env` exists.
+2. Creates `backend/.venv` (uses `uv` if available, falls back to `python3 -m venv`) and installs backend dependencies — skipped on subsequent runs when `uvicorn` is already present.
+3. Runs all pending DB migrations via `backend/scripts/run-migrations.sh up` (uses a local `dbmate` install or falls back to the official Docker image).
+4. Installs frontend `node_modules` via `npm ci` if missing; creates `frontend/.env.local` from the example if it doesn't exist.
+5. Frees ports 8000 and 3000 if stale processes are still bound to them.
+6. Starts the FastAPI backend (`uvicorn --reload`) and waits for `/health` to respond before proceeding.
+7. Starts the Next.js frontend (`npm run dev` with Turbopack).
+8. Blocks until **Ctrl-C**, then shuts both services down cleanly.
+
+### Prerequisites
+
+- Python 3.11+ and `uv` (or plain `pip`)
+- Node.js 22+ and `npm`
+- `docker` (only needed for DB migrations if `dbmate` is not installed locally)
+- A populated `backend/.env` — copy from `backend/.env.example` and fill in values
+
+### Run
+
+```bash
+# One-time: copy and fill in the backend env file
+cp backend/.env.example backend/.env
+
+# Start everything
+./dev.sh
+```
+
+| Service  | URL                     |
+|----------|-------------------------|
+| Backend  | http://localhost:8000   |
+| Frontend | http://localhost:3000   |
+
+Press **Ctrl-C** to stop both services.
+
+---
+
 ## Quickstart
 
 ```bash

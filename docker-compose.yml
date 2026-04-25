@@ -54,6 +54,7 @@ services:
       # when deploying behind a public gateway.
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_ALLOWED_FILE_EXTENSIONS: ${NEXT_PUBLIC_ALLOWED_FILE_EXTENSIONS:-.pdf,.md,.markdown}
     container_name: ragfier-frontend
     ports:
       - "3000:3000"
@@ -61,6 +62,7 @@ services:
       # Consumed by SSR/route handlers. The browser bundle uses the build-arg
       # value above, which must point at a host the browser can reach.
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NEXT_PUBLIC_ALLOWED_FILE_EXTENSIONS=${NEXT_PUBLIC_ALLOWED_FILE_EXTENSIONS:-.pdf,.md,.markdown}
       - NODE_ENV=production
     depends_on:
       - backend

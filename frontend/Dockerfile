@@ -32,6 +32,10 @@ ENV NODE_ENV=production
 ARG NEXT_PUBLIC_API_URL=http://backend:8000
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
+# Allowed upload extensions are also inlined into browser bundles at build time.
+ARG NEXT_PUBLIC_ALLOWED_FILE_EXTENSIONS=.pdf,.md,.markdown
+ENV NEXT_PUBLIC_ALLOWED_FILE_EXTENSIONS=${NEXT_PUBLIC_ALLOWED_FILE_EXTENSIONS}
+
 RUN npm run build
 
 # ── Stage 3: runtime image — only what's needed to serve ─────────────────────

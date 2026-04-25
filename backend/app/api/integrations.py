@@ -55,10 +55,19 @@ async def upload_document_to_integration(
     settings = get_settings()
     if not file.filename:
         raise_api_error(422, "ingest.file_name_required")
+    file_name = file.filename or ""
 
-    suffix = Path(file.filename).suffix.lower().lstrip(".")
-    if suffix not in settings.allowed_file_types:
-        raise_api_error(422, "ingest.unsupported_file_type", detail={"file_type": suffix})
+    file_type = settings.canonical_file_type(file_name)
+    if file_type not in settings.allowed_file_types:
+        raise_api_error(
+            422,
+            "ingest.unsupported_file_type",
+            detail={
+                "file_type": file_type,
+                "allowed_file_types": settings.allowed_file_types,
+                "allowed_file_extensions": settings.allowed_file_extensions,
+            },
+        )
 
     contents = await file.read()
     if not contents:
@@ -67,7 +76,7 @@ async def upload_document_to_integration(
         raise_api_error(413, "ingest.file_too_large", detail={"max_file_size_mb": settings.max_file_size_mb})
 
     job_id = str(uuid.uuid4())
-    storage_path = f"{auth.tenant_id}/{resolved_integration_id}/{job_id}/{file.filename}"
+    storage_path = f"{auth.tenant_id}/{resolved_integration_id}/{job_id}/{file_name}"
     try:
         client.storage.from_(settings.supabase_storage_bucket).upload(
             path=storage_path,
@@ -76,11 +85,11 @@ async def upload_document_to_integration(
         )
     except Exception as exc:
         logger.warning("integrations.upload.storage_failed", tenant_id=auth.tenant_id, job_id=job_id, error=str(exc))
-        storage_path = f"local://{file.filename}"
+        storage_path = f"local://{file_name}"
 
     tmp_dir = Path(tempfile.gettempdir()) / "ragfier" / job_id
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / file.filename
+    tmp_file = tmp_dir / file_name
     tmp_file.write_bytes(contents)
 
     try:
@@ -106,8 +115,8 @@ async def upload_document_to_integration(
         tenant_id=auth.tenant_id,
         integration_id=resolved_integration_id,
         file_path=str(tmp_file),
-        file_name=file.filename,
-        file_type=suffix,
+        file_name=file_name,
+        file_type=file_type,
         document_title=document_title,
     )
 
@@ -116,7 +125,7 @@ async def upload_document_to_integration(
         tenant_id=auth.tenant_id,
         integration_id=resolved_integration_id,
         job_id=job_id,
-        file_name=file.filename,
+        file_name=file_name,
     )
     return build_response(
         IngestResponse,

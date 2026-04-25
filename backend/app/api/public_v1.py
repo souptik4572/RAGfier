@@ -116,9 +116,18 @@ async def upload_document_v1(
 
     if not file.filename:
         raise_api_error(422, "ingest.file_name_required")
-    suffix = Path(file.filename).suffix.lower().lstrip(".")
-    if suffix not in settings.allowed_file_types:
-        raise_api_error(422, "ingest.unsupported_file_type", detail={"file_type": suffix})
+    file_name = file.filename
+    file_type = settings.canonical_file_type(file_name)
+    if file_type not in settings.allowed_file_types:
+        raise_api_error(
+            422,
+            "ingest.unsupported_file_type",
+            detail={
+                "file_type": file_type,
+                "allowed_file_types": settings.allowed_file_types,
+                "allowed_file_extensions": settings.allowed_file_extensions,
+            },
+        )
 
     contents = await file.read()
     if not contents:
@@ -127,7 +136,7 @@ async def upload_document_v1(
         raise_api_error(413, "ingest.file_too_large", detail={"max_file_size_mb": settings.max_file_size_mb})
 
     job_id = str(uuid.uuid4())
-    storage_path = f"{auth.tenant_id}/{knowledge_base_id}/{job_id}/{file.filename}"
+    storage_path = f"{auth.tenant_id}/{knowledge_base_id}/{job_id}/{file_name}"
     try:
         client.storage.from_(settings.supabase_storage_bucket).upload(
             path=storage_path,
@@ -136,11 +145,11 @@ async def upload_document_v1(
         )
     except Exception as exc:
         logger.warning("platform.upload.storage_failed", tenant_id=auth.tenant_id, job_id=job_id, error=str(exc))
-        storage_path = f"local://{file.filename}"
+        storage_path = f"local://{file_name}"
 
     tmp_dir = Path(tempfile.gettempdir()) / "ragfier" / job_id
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / file.filename
+    tmp_file = tmp_dir / file_name
     tmp_file.write_bytes(contents)
 
     client.table("ingestion_jobs").insert(
@@ -149,7 +158,7 @@ async def upload_document_v1(
             "tenant_id": auth.tenant_id,
             "integration_id": auth.integration_id,
             "knowledge_base_id": str(knowledge_base_id),
-            "file_name": file.filename,
+            "file_name": file_name,
             "file_path": storage_path,
             "status": "pending",
             "source_type": "upload",
@@ -165,8 +174,8 @@ async def upload_document_v1(
         knowledge_base_id=str(knowledge_base_id),
         source_type="upload",
         file_path=str(tmp_file),
-        file_name=file.filename,
-        file_type=suffix,
+        file_name=file_name,
+        file_type=file_type,
         document_title=document_title,
     )
 
@@ -178,7 +187,7 @@ async def upload_document_v1(
         action="document.uploaded",
         resource_type="document",
         resource_id=job_id,
-        metadata={"knowledge_base_id": str(knowledge_base_id), "file_name": file.filename},
+        metadata={"knowledge_base_id": str(knowledge_base_id), "file_name": file_name},
     )
     await write_request_log_async(
         client,

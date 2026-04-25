@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import zipfile
 from pathlib import Path
 from typing import Any, List, Optional
+from xml.etree import ElementTree as ET
 
 from app.config import get_settings
 from app.models.schemas import ParsedBlock
@@ -13,6 +15,7 @@ logger = get_logger(__name__)
 PARSER_NAME = "llamaparse"
 
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
 class ParserError(RuntimeError):
@@ -38,6 +41,8 @@ class DocumentParser:
             blocks = self._parse_markdown(path.read_text(encoding="utf-8"))
         elif file_type == "pdf":
             blocks = await self._parse_pdf(path)
+        elif file_type == "docx":
+            blocks = self._parse_docx(path)
         else:
             raise ParserError(f"Unsupported file type: {file_type}")
 
@@ -86,6 +91,69 @@ class DocumentParser:
 
         if not blocks:
             raise ParserError("Parser returned no content.")
+        return blocks
+
+    def _parse_docx(self, path: Path) -> List[ParsedBlock]:
+        """Parse DOCX text content with basic heading detection.
+
+        DOCX does not expose spatial metadata comparable to PDF in this
+        parser path, so page_number/bounding_boxes remain unset.
+        """
+        try:
+            with zipfile.ZipFile(path) as archive:
+                xml_bytes = archive.read("word/document.xml")
+        except KeyError as exc:
+            raise ParserError("DOCX is missing word/document.xml") from exc
+        except zipfile.BadZipFile as exc:
+            raise ParserError("Invalid DOCX file format") from exc
+        except Exception as exc:
+            raise ParserError(f"Failed to read DOCX: {exc}") from exc
+
+        try:
+            root = ET.fromstring(xml_bytes)
+        except ET.ParseError as exc:
+            raise ParserError("Unable to parse DOCX XML") from exc
+
+        ns = {"w": _WORD_NS}
+        blocks: List[ParsedBlock] = []
+        current_heading: Optional[str] = None
+
+        paragraphs = root.findall(".//w:body/w:p", ns)
+        for paragraph in paragraphs:
+            text_parts = [
+                node.text or ""
+                for node in paragraph.findall(".//w:t", ns)
+            ]
+            text = "".join(text_parts).strip()
+            if not text:
+                continue
+
+            style_node = paragraph.find("./w:pPr/w:pStyle", ns)
+            style_value = (style_node.get(f"{{{_WORD_NS}}}val") if style_node is not None else "") or ""
+            normalized_style = style_value.strip().lower()
+            is_heading = normalized_style.startswith("heading")
+
+            if is_heading:
+                current_heading = text
+                blocks.append(
+                    ParsedBlock(
+                        text=text,
+                        section_heading=current_heading,
+                        element_type="heading",
+                    )
+                )
+            else:
+                blocks.append(
+                    ParsedBlock(
+                        text=text,
+                        section_heading=current_heading,
+                        element_type="paragraph",
+                    )
+                )
+
+        if not blocks:
+            raise ParserError("DOCX parser returned no content.")
+
         return blocks
 
     def _parse_markdown(self, text: str) -> List[ParsedBlock]:

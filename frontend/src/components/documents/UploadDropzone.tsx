@@ -5,6 +5,7 @@ import { Upload, FileUp, FileText, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useJobPoller } from '@/lib/hooks/useJobPoller';
+import { allowedUploadExtensions, uploadAcceptAttribute } from '@/lib/uploadConfig';
 import { cn, getErrorMessage } from '@/lib/utils';
 
 interface UploadDropzoneProps {
@@ -12,8 +13,6 @@ interface UploadDropzoneProps {
   pendingJobId: string | null;
   integrationId: string;
 }
-
-const ALLOWED_EXTENSIONS = ['.pdf', '.md', '.markdown'];
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -45,8 +44,8 @@ export function UploadDropzone({
     const file = files[0];
 
     const ext = '.' + file.name.split('.').pop()?.toLowerCase();
-    if (!ALLOWED_EXTENSIONS.includes(ext)) {
-      toast.error('Only PDF and Markdown files are supported');
+    if (!allowedUploadExtensions.includes(ext)) {
+      toast.error(`Unsupported file type. Allowed: ${allowedUploadExtensions.join(', ')}`);
       return;
     }
 
@@ -125,7 +124,7 @@ export function UploadDropzone({
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,.md,.markdown"
+          accept={uploadAcceptAttribute}
           className="hidden"
           onChange={(e) => stageFiles(e.target.files)}
           disabled={isBusy}
@@ -173,7 +172,7 @@ export function UploadDropzone({
                 : 'Drop files here or click to select'}
             </p>
             <p className="mt-1 text-sm text-gray-500">
-              Supports PDF and Markdown files
+              Supports: {allowedUploadExtensions.join(', ')}
             </p>
 
             {isProcessing && progressPercent !== null && (

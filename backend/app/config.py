@@ -13,6 +13,11 @@ from pydantic_settings import (
 )
 
 
+FILE_TYPE_ALIASES: dict[str, str] = {
+    "markdown": "md",
+}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -157,9 +162,39 @@ class Settings(BaseSettings):
             return [item.strip().lower() for item in v.split(",") if item.strip()]
         return v
 
+    @field_validator("allowed_file_types", mode="after")
+    @classmethod
+    def normalize_allowed_file_types(cls, values: List[str]) -> List[str]:
+        normalized: List[str] = []
+        seen: set[str] = set()
+
+        for value in values:
+            file_type = value.strip().lower().lstrip(".")
+            canonical = FILE_TYPE_ALIASES.get(file_type, file_type)
+            if not canonical:
+                continue
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            normalized.append(canonical)
+
+        if not normalized:
+            raise ValueError("ALLOWED_FILE_TYPES cannot be empty")
+
+        return normalized
+
+    def canonical_file_type(self, filename: str) -> str:
+        suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        suffix = suffix.lstrip(".")
+        return FILE_TYPE_ALIASES.get(suffix, suffix)
+
     @property
     def max_file_size_bytes(self) -> int:
         return self.max_file_size_mb * 1024 * 1024
+
+    @property
+    def allowed_file_extensions(self) -> List[str]:
+        return [f".{file_type}" for file_type in self.allowed_file_types]
 
 
 @lru_cache(maxsize=1)

@@ -31,8 +31,7 @@ router = APIRouter(tags=["ingest"])
 
 
 def _detect_file_type(filename: str) -> str:
-    suffix = Path(filename).suffix.lower().lstrip(".")
-    return suffix
+    return get_settings().canonical_file_type(filename)
 
 
 @router.post("/ingest", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -50,8 +49,9 @@ async def ingest_document(
 
     if not file.filename:
         raise_api_error(422, "ingest.file_name_required")
+    file_name = file.filename or ""
 
-    file_type = _detect_file_type(file.filename)
+    file_type = _detect_file_type(file_name)
     if file_type not in settings.allowed_file_types:
         raise_api_error(
             422,
@@ -59,6 +59,7 @@ async def ingest_document(
             detail={
                 "file_type": file_type,
                 "allowed_file_types": settings.allowed_file_types,
+                "allowed_file_extensions": settings.allowed_file_extensions,
             },
         )
 
@@ -73,7 +74,7 @@ async def ingest_document(
         )
 
     job_id = str(uuid.uuid4())
-    storage_path = f"{auth.tenant_id}/{resolved_integration_id}/{job_id}/{file.filename}"
+    storage_path = f"{auth.tenant_id}/{resolved_integration_id}/{job_id}/{file_name}"
 
     # Upload the raw file to Supabase Storage (best-effort — if not
     # configured we still proceed to local processing).
@@ -90,13 +91,13 @@ async def ingest_document(
             job_id=job_id,
             error=str(exc),
         )
-        storage_path = f"local://{file.filename}"
+        storage_path = f"local://{file_name}"
 
     # Persist the raw bytes to a temp file so the background pipeline
     # can parse without needing to re-download from Storage.
     tmp_dir = Path(tempfile.gettempdir()) / "ragfier" / job_id
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = tmp_dir / file.filename
+    tmp_file = tmp_dir / file_name
     tmp_file.write_bytes(contents)
 
     # Create the ingestion_jobs row.
@@ -128,7 +129,7 @@ async def ingest_document(
         tenant_id=auth.tenant_id,
         integration_id=resolved_integration_id,
         file_path=str(tmp_file),
-        file_name=file.filename,
+        file_name=file_name,
         file_type=file_type,
         document_title=document_title,
     )
@@ -137,7 +138,7 @@ async def ingest_document(
         "ingest.accepted",
         tenant_id=auth.tenant_id,
         job_id=job_id,
-        file_name=file.filename,
+        file_name=file_name,
         file_size=len(contents),
     )
 
