@@ -1,7 +1,7 @@
 'use client';
 
-import { useRef, useEffect, useState } from 'react';
-import { Send } from 'lucide-react';
+import { useRef, useEffect, useState, useCallback } from 'react';
+import { ArrowDown, ArrowUp, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useChatStore } from '@/lib/store/chatStore';
 import { useStreamQuery } from '@/lib/hooks/useStreamQuery';
@@ -11,6 +11,15 @@ import { CitationCard } from './CitationCard';
 interface ChatWindowProps {
   integrationId: string;
 }
+
+const SCROLL_BOTTOM_THRESHOLD = 80;
+
+const EXAMPLE_PROMPTS = [
+  'Summarize the key points in plain language.',
+  'What are the main findings?',
+  'Compare the perspectives discussed.',
+  'List the most important takeaways.',
+];
 
 export function ChatWindow({ integrationId }: ChatWindowProps) {
   const {
@@ -26,17 +35,32 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
   const [matchCount, setMatchCount] = useState(3);
   const [rerank, setRerank] = useState(true);
   const [pulsingSourceId, setPulsingSourceId] = useState<string | null>(null);
+  const [stickToBottom, setStickToBottom] = useState(true);
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const citationRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
 
   const isAnyStreaming = messages.some((m) => m.isStreaming);
+  const messageCount = messages.length;
+  const lastMessage = messages[messageCount - 1];
+  const lastContent = lastMessage?.content ?? '';
 
-  // Auto-scroll to bottom when messages update
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setStickToBottom(distanceFromBottom < SCROLL_BOTTOM_THRESHOLD);
+  }, []);
+
+  // Auto-scroll only while user is anchored near the bottom.
+  // Smooth scroll on new messages; instant during token streams to avoid jitter.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!stickToBottom) return;
+    const behavior = isAnyStreaming ? 'auto' : 'smooth';
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  }, [messageCount, lastContent, isAnyStreaming, stickToBottom]);
 
   // Scroll the sidebar to the focused citation and pulse-highlight it
   useEffect(() => {
@@ -86,13 +110,38 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
   return (
     <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-220px)] min-h-[500px]">
       {/* Chat area — left 2/3 on desktop, full on mobile */}
-      <div className="flex-1 lg:basis-2/3 bg-white rounded-lg flex flex-col overflow-hidden min-h-0">
+      <div className="flex-1 lg:basis-2/3 bg-white rounded-lg flex flex-col overflow-hidden min-h-0 relative">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto p-4 sm:p-6"
+        >
           {messages.length === 0 && (
-            <div className="h-full flex flex-col items-center justify-center text-center text-gray-400">
-              <p className="text-lg font-semibold text-[#111827] mb-1">Ask anything</p>
-              <p className="text-sm">Send a query to start exploring your documents.</p>
+            <div className="h-full flex flex-col items-center justify-center text-center px-4">
+              <div className="w-12 h-12 rounded-2xl bg-linear-to-br from-[#3B82F6] to-[#1E40AF] flex items-center justify-center shadow-sm mb-4">
+                <Sparkles className="h-6 w-6 text-white" />
+              </div>
+              <p className="text-xl font-semibold text-[#111827] mb-1">
+                How can I help today?
+              </p>
+              <p className="text-sm text-gray-500 mb-6">
+                Ask a question about your documents to get started.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-xl">
+                {EXAMPLE_PROMPTS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => {
+                      setInput(prompt);
+                      textareaRef.current?.focus();
+                    }}
+                    className="text-left text-sm text-[#374151] bg-white hover:bg-[#F9FAFB] border border-[#E5E7EB] hover:border-[#3B82F6] rounded-xl px-4 py-3 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
           {messages.map((msg) => (
@@ -101,16 +150,65 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
           <div ref={messagesEndRef} />
         </div>
 
+        {!stickToBottom && messages.length > 0 && (
+          <button
+            onClick={() => {
+              setStickToBottom(true);
+              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            }}
+            aria-label="Jump to latest message"
+            className="absolute bottom-28 right-4 sm:right-6 bg-white shadow-md border border-[#E5E7EB] hover:border-[#3B82F6] hover:text-[#3B82F6] text-[#111827] rounded-full h-9 w-9 flex items-center justify-center transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
+          >
+            <ArrowDown className="h-4 w-4" />
+          </button>
+        )}
+
         {/* Input bar */}
-        <div className="bg-[#F3F4F6] border-t-2 border-[#E5E7EB] p-3 sm:p-4">
-          {/* Controls row */}
-          <div className="flex items-center gap-4 mb-3">
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-[#111827]">
-              Results
+        <div className="border-t border-[#E5E7EB] bg-white p-3 sm:p-4">
+          {/* Pill input */}
+          <div
+            className={cn(
+              'flex items-end gap-2 bg-[#F9FAFB] rounded-2xl border-2 border-transparent px-3 py-2 transition-colors duration-150',
+              'focus-within:border-[#3B82F6] focus-within:bg-white'
+            )}
+          >
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleInput}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask a question about your documents…"
+              rows={1}
+              disabled={isAnyStreaming}
+              className={cn(
+                'flex-1 resize-none bg-transparent border-0 outline-hidden px-1 py-1.5 text-sm text-[#111827] placeholder:text-gray-400',
+                'disabled:opacity-60 disabled:cursor-not-allowed'
+              )}
+              aria-label="Query input"
+            />
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() || isAnyStreaming}
+              aria-label="Send message"
+              className={cn(
+                'bg-[#111827] text-white h-8 w-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-150',
+                'hover:bg-[#3B82F6]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]',
+                'disabled:bg-[#E5E7EB] disabled:text-gray-400 disabled:cursor-not-allowed disabled:hover:bg-[#E5E7EB]'
+              )}
+            >
+              <ArrowUp className="h-4 w-4" />
+            </button>
+          </div>
+
+          {/* Controls chip row */}
+          <div className="flex items-center gap-2 mt-2.5 px-1 flex-wrap">
+            <label className="inline-flex items-center gap-1.5 text-xs text-gray-500 bg-[#F3F4F6] hover:bg-[#E5E7EB] rounded-full px-2.5 py-1 cursor-pointer transition-colors duration-150">
+              <span>Results</span>
               <select
                 value={matchCount}
                 onChange={(e) => setMatchCount(Number(e.target.value))}
-                className="ml-1 bg-white border-0 rounded-md text-xs px-2 py-1 text-[#111827] focus:outline-none focus:border-2 focus:border-[#3B82F6] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
+                className="bg-transparent border-0 outline-hidden text-xs font-semibold text-[#111827] cursor-pointer focus:outline-none"
                 aria-label="Number of results to retrieve"
               >
                 {[3, 5, 10, 20].map((n) => (
@@ -121,58 +219,24 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
               </select>
             </label>
 
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-[#111827] cursor-pointer select-none">
+            <label className="inline-flex items-center gap-1.5 text-xs text-gray-500 bg-[#F3F4F6] hover:bg-[#E5E7EB] rounded-full px-2.5 py-1 cursor-pointer select-none transition-colors duration-150">
               <input
                 type="checkbox"
                 checked={rerank}
                 onChange={(e) => setRerank(e.target.checked)}
-                className="accent-[#3B82F6] w-3.5 h-3.5"
+                className="accent-[#3B82F6] w-3 h-3"
               />
-              Rerank
+              <span className="font-semibold text-[#111827]">Rerank</span>
             </label>
 
             {messages.length > 0 && (
               <button
                 onClick={clearChat}
-                className="ml-auto text-xs text-gray-400 hover:text-[#111827] transition-colors duration-150 rounded-md px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
+                className="ml-auto text-xs text-gray-400 hover:text-[#111827] hover:bg-[#F3F4F6] rounded-full px-2.5 py-1 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]"
               >
                 Clear chat
               </button>
             )}
-          </div>
-
-          {/* Textarea + send */}
-          <div className="flex items-end gap-3">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={handleInput}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask a question about your documents…"
-              rows={1}
-              disabled={isAnyStreaming}
-              className={cn(
-                'flex-1 resize-none rounded-md bg-[#F3F4F6] border-0 px-4 py-3 text-sm text-[#111827] placeholder:text-gray-400 transition-all duration-150',
-                'focus:outline-none focus:bg-white focus:border-2 focus:border-[#3B82F6]',
-                'focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]',
-                'disabled:opacity-60 disabled:cursor-not-allowed'
-              )}
-              aria-label="Query input"
-            />
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || isAnyStreaming}
-              aria-label="Send message"
-              className={cn(
-                'bg-[#3B82F6] text-white h-12 sm:h-14 rounded-md hover:bg-[#2563EB] hover:scale-105 transition-all duration-200 font-semibold px-4 sm:px-6',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#3B82F6]',
-                'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:bg-[#3B82F6]',
-                'flex items-center gap-2 shrink-0'
-              )}
-            >
-              <Send className="h-4 w-4" />
-              <span className="hidden sm:inline">Send</span>
-            </button>
           </div>
         </div>
       </div>
