@@ -16,8 +16,14 @@ import time
 import uuid
 from typing import Any, AsyncIterator
 
+from fastapi import Response
 from sse_starlette.sse import EventSourceResponse
 
+from app.api.rate_limit import (
+    enforce_api_key_query_limit,
+    enforce_api_key_stream_limits,
+    release_stream_limit_lease,
+)
 from app.models.schemas import UsageMetadata
 from app.pipeline.citation_resolver import (
     CitationStreamStripper,
@@ -72,8 +78,12 @@ async def execute_query(
     endpoint: str,
     log_prefix: str,
     write_audit: bool = False,
+    response: Response | None = None,
 ) -> Any:
     """Run the full non-streaming query flow shared by three endpoints."""
+    rate_limit_headers = await enforce_api_key_query_limit(auth)
+    if response is not None:
+        response.headers.update(rate_limit_headers)
     started = time.perf_counter()
     request_id = uuid.uuid4()
     query_token_count = count_tokens(payload.query)
@@ -225,6 +235,7 @@ async def build_stream_response(
     endpoint: str,
 ) -> EventSourceResponse:
     """Prepare the query and return an SSE response for the three stream routes."""
+    stream_lease, rate_limit_headers = await enforce_api_key_stream_limits(auth)
     request_id = str(uuid.uuid4())
     query_token_count = count_tokens(payload.query)
 
@@ -242,24 +253,88 @@ async def build_stream_response(
         raise_api_error(500, "query.pipeline_failed", detail=str(exc))
 
     async def event_generator() -> AsyncIterator[dict[str, str]]:
-        citations = (
-            resolve_citations("", prepared.final_chunks, include_uncited=True)
-            if payload.include_sources
-            else []
-        )
-        yield {
-            "event": "sources",
-            "data": json.dumps(
-                success_payload(
-                    "query.sources_prepared",
-                    request_id=request_id,
-                    citations=[c.model_dump(mode="json") for c in citations],
-                )
-            ),
-        }
+        try:
+            citations = (
+                resolve_citations("", prepared.final_chunks, include_uncited=True)
+                if payload.include_sources
+                else []
+            )
+            yield {
+                "event": "sources",
+                "data": json.dumps(
+                    success_payload(
+                        "query.sources_prepared",
+                        request_id=request_id,
+                        citations=[c.model_dump(mode="json") for c in citations],
+                    )
+                ),
+            }
 
-        if prepared.declined:
+            if prepared.declined:
+                stamp_total_latency(prepared)
+                await write_request_log_async(
+                    client,
+                    tenant_id=auth.tenant_id,
+                    integration_id=auth.integration_id,
+                    api_key_id=auth.api_key_id,
+                    endpoint=endpoint,
+                    method="POST",
+                    status_code=200,
+                    latency_ms=prepared.retrieval_metadata.latency_ms.total,
+                    input_tokens=query_token_count,
+                    metadata={"declined": True},
+                )
+                yield {"event": "token", "data": INSUFFICIENT_CONTEXT_MESSAGE}
+                yield {
+                    "event": "done",
+                    "data": json.dumps(
+                        success_payload(
+                            "query.stream_declined",
+                            request_id=request_id,
+                            declined=True,
+                            retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
+                            usage=usage_from_counts(query_token_count, "").model_dump(mode="json"),
+                        )
+                    ),
+                }
+                return
+
+            answer_parts: list[str] = []
+            stripper = CitationStreamStripper() if not payload.include_sources else None
+            try:
+                generator = Generator()
+                gen_started = time.perf_counter()
+                async for token in generator.stream(
+                    prompt=prepared.prompt,
+                    context=prepared.context,
+                    query=payload.query,
+                    include_citations=payload.include_sources,
+                ):
+                    answer_parts.append(token)
+                    if stripper is not None:
+                        token = stripper.feed(token)
+                    if token:
+                        yield {"event": "token", "data": token}
+            except GenerationError as exc:
+                if stripper is not None:
+                    remainder = stripper.flush()
+                    if remainder:
+                        yield {"event": "token", "data": remainder}
+                yield {
+                    "event": "error",
+                    "data": json.dumps(success_payload("query.stream_generation_failed", detail=str(exc))),
+                }
+                return
+
+            if stripper is not None:
+                remainder = stripper.flush()
+                if remainder:
+                    yield {"event": "token", "data": remainder}
+
+            prepared.retrieval_metadata.latency_ms.generation = elapsed_ms(gen_started)
             stamp_total_latency(prepared)
+            answer = "".join(answer_parts)
+            usage = usage_from_counts(query_token_count, answer)
             await write_request_log_async(
                 client,
                 tenant_id=auth.tenant_id,
@@ -269,83 +344,22 @@ async def build_stream_response(
                 method="POST",
                 status_code=200,
                 latency_ms=prepared.retrieval_metadata.latency_ms.total,
-                input_tokens=query_token_count,
-                metadata={"declined": True},
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
             )
-            yield {"event": "token", "data": INSUFFICIENT_CONTEXT_MESSAGE}
             yield {
                 "event": "done",
                 "data": json.dumps(
                     success_payload(
-                        "query.stream_declined",
+                        "query.stream_completed",
                         request_id=request_id,
-                        declined=True,
+                        declined=False,
                         retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
-                        usage=usage_from_counts(query_token_count, "").model_dump(mode="json"),
+                        usage=usage.model_dump(mode="json"),
                     )
                 ),
             }
-            return
+        finally:
+            await release_stream_limit_lease(stream_lease)
 
-        answer_parts: list[str] = []
-        stripper = CitationStreamStripper() if not payload.include_sources else None
-        try:
-            generator = Generator()
-            gen_started = time.perf_counter()
-            async for token in generator.stream(
-                prompt=prepared.prompt,
-                context=prepared.context,
-                query=payload.query,
-                include_citations=payload.include_sources,
-            ):
-                answer_parts.append(token)
-                if stripper is not None:
-                    token = stripper.feed(token)
-                if token:
-                    yield {"event": "token", "data": token}
-        except GenerationError as exc:
-            if stripper is not None:
-                remainder = stripper.flush()
-                if remainder:
-                    yield {"event": "token", "data": remainder}
-            yield {
-                "event": "error",
-                "data": json.dumps(success_payload("query.stream_generation_failed", detail=str(exc))),
-            }
-            return
-
-        if stripper is not None:
-            remainder = stripper.flush()
-            if remainder:
-                yield {"event": "token", "data": remainder}
-
-        prepared.retrieval_metadata.latency_ms.generation = elapsed_ms(gen_started)
-        stamp_total_latency(prepared)
-        answer = "".join(answer_parts)
-        usage = usage_from_counts(query_token_count, answer)
-        await write_request_log_async(
-            client,
-            tenant_id=auth.tenant_id,
-            integration_id=auth.integration_id,
-            api_key_id=auth.api_key_id,
-            endpoint=endpoint,
-            method="POST",
-            status_code=200,
-            latency_ms=prepared.retrieval_metadata.latency_ms.total,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-        )
-        yield {
-            "event": "done",
-            "data": json.dumps(
-                success_payload(
-                    "query.stream_completed",
-                    request_id=request_id,
-                    declined=False,
-                    retrieval_metadata=prepared.retrieval_metadata.model_dump(mode="json"),
-                    usage=usage.model_dump(mode="json"),
-                )
-            ),
-        }
-
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(event_generator(), headers=rate_limit_headers)

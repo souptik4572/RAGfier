@@ -237,6 +237,8 @@ def test_v1_query_scoped_to_tenant(
         headers={"Authorization": f"Bearer {secret}"},
     )
     assert response.status_code == 200, response.text
+    assert response.headers["X-RateLimit-Limit"]
+    assert response.headers["X-RateLimit-Reset"]
     body = response.json()
     assert body["answer"].startswith("The liability cap")
     assert body["request_id"]
@@ -301,6 +303,31 @@ def test_v1_documents_connectors_usage_and_audit_roundtrip(
     assert fake_db.rows("ingestion_jobs")[0]["status"] == "deleted"
 
 
+def test_v1_document_upload_returns_rate_limit_headers(
+    client: TestClient,
+    fake_db: FakeSupabaseClient,
+) -> None:
+    """Verify that successful document upload requests include rate limit headers."""
+    secret = _create_api_key(client)
+    kb_resp = client.post(
+        "/v1/knowledge-bases",
+        json={"name": "TestKB"},
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    kb_id = kb_resp.json()["id"]
+
+    upload = client.post(
+        "/v1/documents/upload",
+        data={"knowledge_base_id": kb_id, "document_title": "Test"},
+        files={"file": ("test.md", b"# Test\n\nContent", "text/markdown")},
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    assert upload.status_code == 202
+    assert "X-RateLimit-Limit" in upload.headers
+    assert "X-RateLimit-Reset" in upload.headers
+    # X-RateLimit-Remaining may be present but not required for successful responses
+
+
 def test_v1_stream_query_emits_request_id_and_usage(
     client: TestClient,
     fake_db: FakeSupabaseClient,
@@ -337,6 +364,8 @@ def test_v1_stream_query_emits_request_id_and_usage(
         headers={"Authorization": f"Bearer {secret}"},
     ) as response:
         assert response.status_code == 200
+        assert response.headers["X-RateLimit-Limit"]
+        assert response.headers["X-RateLimit-Reset"]
         events: list[tuple[str, str]] = []
         current_event = None
         for raw_line in response.iter_lines():

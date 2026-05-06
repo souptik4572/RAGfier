@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Annotated, List
+from typing import Annotated, List, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import (
@@ -70,6 +70,57 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
 
     signed_url_expiry_seconds: int = Field(default=3600, alias="SIGNED_URL_EXPIRY_SECONDS")
+
+    # --- Query rate limiting ---
+    rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
+    rate_limit_backend: Literal["memory", "redis"] = Field(
+        default="memory",
+        alias="RATE_LIMIT_BACKEND",
+    )
+    rate_limit_fail_open: bool = Field(default=True, alias="RATE_LIMIT_FAIL_OPEN")
+    rate_limit_redis_url: str = Field(default="", alias="RATE_LIMIT_REDIS_URL")
+    redis_url: str = Field(default="", alias="REDIS_URL")
+    rate_limit_redis_connect_timeout_ms: int = Field(
+        default=250,
+        alias="RATE_LIMIT_REDIS_CONNECT_TIMEOUT_MS",
+    )
+    rate_limit_window_seconds: int = Field(default=60, alias="RATE_LIMIT_WINDOW_SECONDS")
+    rate_limit_stream_slot_ttl_seconds: int = Field(
+        default=300,
+        alias="RATE_LIMIT_STREAM_SLOT_TTL_SECONDS",
+    )
+    rate_limit_jwt_query_requests_per_window: int = Field(
+        default=30,
+        alias="RATE_LIMIT_JWT_QUERY_REQUESTS_PER_WINDOW",
+    )
+    rate_limit_jwt_stream_requests_per_window: int = Field(
+        default=12,
+        alias="RATE_LIMIT_JWT_STREAM_REQUESTS_PER_WINDOW",
+    )
+    rate_limit_jwt_stream_concurrency: int = Field(
+        default=3,
+        alias="RATE_LIMIT_JWT_STREAM_CONCURRENCY",
+    )
+    rate_limit_api_key_query_requests_per_window: int = Field(
+        default=60,
+        alias="RATE_LIMIT_API_KEY_QUERY_REQUESTS_PER_WINDOW",
+    )
+    rate_limit_api_key_stream_requests_per_window: int = Field(
+        default=20,
+        alias="RATE_LIMIT_API_KEY_STREAM_REQUESTS_PER_WINDOW",
+    )
+    rate_limit_api_key_stream_concurrency: int = Field(
+        default=5,
+        alias="RATE_LIMIT_API_KEY_STREAM_CONCURRENCY",
+    )
+    rate_limit_jwt_ingest_requests_per_window: int = Field(
+        default=10,
+        alias="RATE_LIMIT_JWT_INGEST_REQUESTS_PER_WINDOW",
+    )
+    rate_limit_api_key_ingest_requests_per_window: int = Field(
+        default=20,
+        alias="RATE_LIMIT_API_KEY_INGEST_REQUESTS_PER_WINDOW",
+    )
 
     # --- Phase 2: hybrid retrieval, reranking, generation ---
     cohere_api_key: str = Field(default="", alias="COHERE_API_KEY")
@@ -195,6 +246,14 @@ class Settings(BaseSettings):
     @property
     def allowed_file_extensions(self) -> List[str]:
         return [f".{file_type}" for file_type in self.allowed_file_types]
+
+    @property
+    def effective_rate_limit_redis_url(self) -> str:
+        if self.rate_limit_redis_url:
+            return self.rate_limit_redis_url
+        if self.redis_url:
+            return self.redis_url
+        return "redis://localhost:6379/0"
 
 
 @lru_cache(maxsize=1)

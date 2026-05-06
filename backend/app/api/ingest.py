@@ -12,11 +12,13 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Response,
     UploadFile,
     status,
 )
 
 from app.api.auth import AuthContext, get_auth_context
+from app.api.rate_limit import enforce_jwt_ingest_limit
 from app.config import get_settings
 from app.models.database import get_service_client
 from app.models.schemas import IngestResponse
@@ -37,12 +39,18 @@ def _detect_file_type(filename: str) -> str:
 @router.post("/ingest", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)
 async def ingest_document(
     background_tasks: BackgroundTasks,
+    response: Response,
     file: UploadFile = File(...),
     document_title: Optional[str] = Form(default=None),
     integration_id: Optional[str] = Form(default=None),
     auth: AuthContext = Depends(get_auth_context),
 ) -> IngestResponse:
     settings = get_settings()
+    
+    # Apply rate limiting before any processing
+    rate_limit_headers = await enforce_jwt_ingest_limit(auth)
+    response.headers.update(rate_limit_headers)
+    
     client = get_service_client()
     integration = resolve_integration(client, auth.tenant_id, integration_id)
     resolved_integration_id = str(integration["id"])

@@ -138,5 +138,18 @@ def test_status_404_for_other_tenant(
     assert body["detail"]["job_id"] == job_id
 
 
+def test_ingest_returns_rate_limit_headers(client: TestClient) -> None:
+    """Verify that successful ingest requests include rate limit headers."""
+    response = client.post(
+        "/ingest",
+        files={"file": ("doc.md", b"# Content\n\nBody", "text/markdown")},
+        data={"document_title": "Test Document"},
+    )
+    assert response.status_code == 202
+    assert "X-RateLimit-Limit" in response.headers
+    assert "X-RateLimit-Reset" in response.headers
+    # X-RateLimit-Remaining may be present but not required for successful responses
+
+
 # The /query endpoint is exercised end-to-end in tests/test_query_pipeline.py
 # after the Phase 2 hybrid-retrieval refactor.

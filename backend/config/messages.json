@@ -1,7 +1,8 @@
 {
   "common": {
     "validation_failed": "Validation failed",
-    "internal_error": "Internal server error"
+    "internal_error": "Internal server error",
+    "rate_limited": "Too many requests. Please retry later."
   },
   "health": {
     "fetched": "Health status retrieved successfully"

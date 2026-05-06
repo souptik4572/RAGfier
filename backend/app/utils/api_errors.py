@@ -33,5 +33,15 @@ def with_message(model: ResponseModelT, message_key: str) -> ResponseModelT:
     return model.model_copy(update={"message": get_message(message_key)})
 
 
-def raise_api_error(status_code: int, message_key: str, *, detail: Any = None) -> None:
-    raise HTTPException(status_code=status_code, detail=error_payload(message_key, detail=detail))
+def raise_api_error(
+    status_code: int,
+    message_key: str,
+    *,
+    detail: Any = None,
+    headers: dict[str, str] | None = None,
+) -> None:
+    raise HTTPException(
+        status_code=status_code,
+        detail=error_payload(message_key, detail=detail),
+        headers=headers,
+    )

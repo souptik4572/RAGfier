@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from app.api.auth import AuthContext, get_auth_context
+from app.api.rate_limit import enforce_jwt_query_limit
 from app.models.database import get_service_client
 from app.models.schemas import HybridQueryResponse, QueryRequest
 from app.pipeline.citation_resolver import resolve_citations, strip_citation_markers
@@ -27,8 +28,10 @@ router = APIRouter(tags=["query"])
 @router.post("/query", response_model=HybridQueryResponse)
 async def query_documents(
     payload: QueryRequest,
+    response: Response,
     auth: AuthContext = Depends(get_auth_context),
 ) -> HybridQueryResponse:
+    response.headers.update(await enforce_jwt_query_limit(auth))
     client = get_service_client()
     integration_id_str = str(payload.integration_id) if getattr(payload, "integration_id", None) else None
     integration = resolve_integration(client, auth.tenant_id, integration_id_str)

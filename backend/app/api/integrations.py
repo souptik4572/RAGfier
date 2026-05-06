@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Response, UploadFile, status
 from sse_starlette.sse import EventSourceResponse
 
 from app.api._query_shared import build_stream_response, execute_query
@@ -247,6 +247,7 @@ async def delete_document_from_integration(
 async def query_integration(
     integration_id: UUID,
     payload: IntegrationQueryRequest,
+    response: Response,
     auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
 ) -> IntegrationQueryResponse:
     # The API key is already scoped to an integration. Verify path matches key.
@@ -260,6 +261,7 @@ async def query_integration(
         response_model=IntegrationQueryResponse,
         endpoint=f"/v1/integrations/{integration_id}/query",
         log_prefix="integrations.query",
+        response=response,
     )
 
 

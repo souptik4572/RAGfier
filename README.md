@@ -54,6 +54,42 @@ Settings precedence (highest to lowest):
 
 This keeps deploy-time secrets out of source control while making safe defaults auditable and versioned.
 
+## Rate Limiting
+
+Query endpoints are protected by request-window and stream-concurrency limits.
+The limiter can run in memory (single-process) or Redis (multi-instance safe).
+
+- Protected JWT endpoints: `/query`, `/query/stream`
+- Protected API-key endpoints: `/v1/query`, `/v1/query/stream`, `/v1/query/integration`, `/v1/query/integration/stream`, `/v1/integrations/{integration_id}/query`, `/v1/integrations/{integration_id}/query/stream`
+
+Successful responses include:
+
+- `X-RateLimit-Limit`
+- `X-RateLimit-Remaining`
+- `X-RateLimit-Reset` (unix epoch seconds)
+
+When a request is blocked (`429`), responses include the headers above plus `Retry-After`.
+
+### Heroku + Redis Add-on
+
+Heroku Redis exposes a `REDIS_URL` config var. Set:
+
+- `RATE_LIMIT_ENABLED=true`
+- `RATE_LIMIT_BACKEND=redis`
+
+Optional tuning vars:
+
+- `RATE_LIMIT_REDIS_URL` (overrides `REDIS_URL` if present)
+- `RATE_LIMIT_FAIL_OPEN=true` (recommended for availability-first behavior)
+- `RATE_LIMIT_WINDOW_SECONDS`
+- `RATE_LIMIT_*_REQUESTS_PER_WINDOW`
+- `RATE_LIMIT_*_STREAM_CONCURRENCY`
+
+Local development with Redis can use:
+
+- `REDIS_URL=redis://localhost:6379/0`
+- `RATE_LIMIT_BACKEND=redis`
+
 ## Architecture
 
 ### Ingestion (Phase 1)

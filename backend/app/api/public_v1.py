@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Response, UploadFile, status
 from sse_starlette.sse import EventSourceResponse
 
 from app.api._query_shared import (
@@ -17,6 +17,7 @@ from app.api._query_shared import (
 )
 from app.api.auth import _slugify
 from app.api.platform_auth import PlatformAuthContext, require_platform_context
+from app.api.rate_limit import enforce_api_key_ingest_limit
 from app.config import get_settings
 from app.models.database import get_service_client
 from app.models.schemas import (
@@ -104,12 +105,18 @@ async def list_knowledge_bases(
 @router.post("/documents/upload", response_model=UploadDocumentResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_document_v1(
     background_tasks: BackgroundTasks,
+    response: Response,
     file: UploadFile = File(...),
     knowledge_base_id: UUID = Form(...),
     document_title: Optional[str] = Form(default=None),
     auth: PlatformAuthContext = Depends(require_platform_context("documents:write")),
 ) -> UploadDocumentResponse:
     started = time.perf_counter()
+    
+    # Apply rate limiting before any processing
+    rate_limit_headers = await enforce_api_key_ingest_limit(auth)
+    response.headers.update(rate_limit_headers)
+    
     client = get_service_client()
     _require_kb(client, auth.tenant_id, str(knowledge_base_id))
     settings = get_settings()
@@ -270,6 +277,7 @@ async def delete_document(
 @router.post("/query", response_model=QueryResponseV1)
 async def query_v1(
     payload: QueryRequestV1,
+    response: Response,
     auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
 ) -> QueryResponseV1:
     return await execute_query(
@@ -280,6 +288,7 @@ async def query_v1(
         endpoint="/v1/query",
         log_prefix="platform.query",
         write_audit=True,
+        response=response,
     )
 
 
@@ -303,6 +312,7 @@ async def query_stream_v1(
 )
 async def query_integration_flat(
     payload: IntegrationQueryRequest,
+    response: Response,
     auth: PlatformAuthContext = Depends(require_platform_context("query:read")),
 ) -> IntegrationQueryResponse:
     """API-key-authenticated query endpoint scoped to the key's integration.
@@ -320,6 +330,7 @@ async def query_integration_flat(
         response_model=IntegrationQueryResponse,
         endpoint="/v1/query/integration",
         log_prefix="v1.query_flat",
+        response=response,
     )
 
 

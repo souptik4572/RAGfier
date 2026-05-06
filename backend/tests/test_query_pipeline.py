@@ -168,6 +168,8 @@ def test_query_returns_answer_and_resolved_citations(client: TestClient) -> None
         json={"query": "What is the liability cap?", "match_count": 2},
     )
     assert response.status_code == 200, response.text
+    assert response.headers["X-RateLimit-Limit"]
+    assert response.headers["X-RateLimit-Reset"]
     body = response.json()
     assert body["message"] == "Query completed successfully"
     assert body["query"] == "What is the liability cap?"
@@ -247,6 +249,8 @@ def test_query_stream_emits_sources_then_tokens_then_done(client: TestClient) ->
         json={"query": "What is the liability cap?", "match_count": 2},
     ) as response:
         assert response.status_code == 200
+        assert response.headers["X-RateLimit-Limit"]
+        assert response.headers["X-RateLimit-Reset"]
         events: list[tuple[str, str]] = []
         current_event = None
         for raw_line in response.iter_lines():
