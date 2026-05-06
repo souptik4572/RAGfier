@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from app.api.auth import AuthContext, get_auth_context
 from app.models.database import get_service_client
 from app.models.schemas import HybridQueryResponse, QueryRequest
-from app.pipeline.citation_resolver import resolve_citations
+from app.pipeline.citation_resolver import resolve_citations, strip_citation_markers
 from app.pipeline.generator import Generator, GenerationError
 from app.pipeline.query_pipeline import (
     INSUFFICIENT_CONTEXT_MESSAGE,
@@ -71,6 +71,7 @@ async def query_documents(
             prompt=prepared.prompt,
             context=prepared.context,
             query=payload.query,
+            include_citations=payload.include_sources,
         )
     except GenerationError as exc:
         logger.error("query.generation_failed", tenant_id=auth.tenant_id, error=str(exc))
@@ -81,11 +82,11 @@ async def query_documents(
     )
     stamp_total_latency(prepared)
 
-    citations = (
-        resolve_citations(answer, prepared.final_chunks)
-        if payload.include_sources
-        else []
-    )
+    if payload.include_sources:
+        citations = resolve_citations(answer, prepared.final_chunks)
+    else:
+        citations = []
+        answer = strip_citation_markers(answer)
 
     logger.info(
         "query.completed",

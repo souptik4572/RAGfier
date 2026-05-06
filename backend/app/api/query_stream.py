@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.api.auth import AuthContext, get_auth_context
 from app.models.database import get_service_client
 from app.models.schemas import QueryRequest
-from app.pipeline.citation_resolver import resolve_citations
+from app.pipeline.citation_resolver import CitationStreamStripper, resolve_citations
 from app.pipeline.generator import Generator, GenerationError
 from app.pipeline.query_pipeline import (
     INSUFFICIENT_CONTEXT_MESSAGE,
@@ -123,15 +123,24 @@ async def query_stream(
             return
 
         gen_start = time.perf_counter()
+        stripper = CitationStreamStripper() if not payload.include_sources else None
         try:
             generator = Generator()
             async for token in generator.stream(
                 prompt=prepared.prompt,
                 context=prepared.context,
                 query=payload.query,
+                include_citations=payload.include_sources,
             ):
-                yield {"event": "token", "data": token}
+                if stripper is not None:
+                    token = stripper.feed(token)
+                if token:
+                    yield {"event": "token", "data": token}
         except GenerationError as exc:
+            if stripper is not None:
+                remainder = stripper.flush()
+                if remainder:
+                    yield {"event": "token", "data": remainder}
             logger.error(
                 "query_stream.generation_failed",
                 tenant_id=auth.tenant_id,
@@ -146,6 +155,11 @@ async def query_stream(
                 "data": json.dumps(success_payload("query.stream_generation_failed", declined=False)),
             }
             return
+
+        if stripper is not None:
+            remainder = stripper.flush()
+            if remainder:
+                yield {"event": "token", "data": remainder}
 
         prepared.retrieval_metadata.latency_ms.generation = int(
             (time.perf_counter() - gen_start) * 1000

@@ -38,6 +38,29 @@ async def test_generate_returns_full_text_and_uses_prompt_params() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_no_citations_appends_suppression_instruction() -> None:
+    fake_client = FakeAsyncOpenAIClient(response_text="The cap is $1M.")
+    gen = Generator(client=fake_client)
+
+    await gen.generate(PROMPT, context="SRC BODY", query="What is the cap?", include_citations=False)
+
+    system_msg = fake_client.chat.completions.calls[-1]["messages"][0]["content"]
+    assert "[SOURCE_N]" in system_msg
+    assert "Do NOT include" in system_msg
+
+
+@pytest.mark.asyncio
+async def test_generate_with_citations_does_not_add_suppression() -> None:
+    fake_client = FakeAsyncOpenAIClient(response_text="Answer [SOURCE_1].")
+    gen = Generator(client=fake_client)
+
+    await gen.generate(PROMPT, context="ctx", query="q", include_citations=True)
+
+    system_msg = fake_client.chat.completions.calls[-1]["messages"][0]["content"]
+    assert "Do NOT include" not in system_msg
+
+
+@pytest.mark.asyncio
 async def test_stream_yields_tokens_in_order() -> None:
     fake_client = FakeAsyncOpenAIClient()
     fake_client.chat.completions.stream_tokens = ["Alpha", " ", "Beta"]
@@ -48,3 +71,16 @@ async def test_stream_yields_tokens_in_order() -> None:
         collected.append(token)
     assert collected == ["Alpha", " ", "Beta"]
     assert fake_client.chat.completions.calls[-1]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_stream_no_citations_injects_suppression_instruction() -> None:
+    fake_client = FakeAsyncOpenAIClient()
+    fake_client.chat.completions.stream_tokens = ["Hello"]
+    gen = Generator(client=fake_client)
+
+    async for _ in gen.stream(PROMPT, context="ctx", query="q", include_citations=False):
+        pass
+
+    system_msg = fake_client.chat.completions.calls[-1]["messages"][0]["content"]
+    assert "Do NOT include" in system_msg

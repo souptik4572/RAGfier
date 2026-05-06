@@ -4,61 +4,20 @@ import { memo, useMemo } from 'react';
 import { Check, Copy, Lock, Sparkles } from 'lucide-react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { PluggableList } from 'unified';
 import { cn } from '@/lib/utils';
 import {
   type ChatMessage as ChatMessageType,
   type BackendCitation,
   useChatStore,
 } from '@/lib/store/chatStore';
-import {
-  remarkCitations,
-  CITATION_OPEN,
-  CITATION_CLOSE,
-} from '@/lib/markdown/remarkCitations';
+import { remarkCitations } from '@/lib/markdown/remarkCitations';
 import { useCopyToClipboard } from '@/lib/hooks/useCopyToClipboard';
 import { CitationInline } from './CitationInline';
 import { StreamingCursor } from './StreamingCursor';
 
 interface ChatMessageProps {
   message: ChatMessageType;
-}
-
-// Rewrite the LLM's `[SOURCE_N]` markers to a markdown-inert sentinel pair
-// (⟦SOURCE_N⟧) before parsing — see remarkCitations.ts for the rationale.
-const CITATION_BRACKET = /\[SOURCE_(\d+)\]/g;
-
-// LLMs frequently ignore the system-prompt's adjacent-bracket convention and
-// emit a single bracket pair around a comma-separated list, e.g.
-//   [SOURCE_1, [SOURCE_2, [SOURCE_35]   ← what we observe in production
-//   [SOURCE_1, SOURCE_2, SOURCE_3]
-//   [SOURCE_1, 2, 3]
-// This canonicalizer matches a complete sloppy list (closing `]` required)
-// and rewrites it to adjacent canonical tokens that the rest of the pipeline
-// understands.
-const SLOPPY_CITATION_LIST =
-  /\[SOURCE_\d+(?:\s*[,;]\s*\[?(?:SOURCE_)?\d+)+\s*\]/g;
-
-// Trailing unclosed citation chain at the very end of a stream buffer. Covers
-// both the simple partial (`[`, `[S`, …, `[SOURCE_12`) and the in-flight list
-// form (`[SOURCE_1, [SOURCE_2, [SOURCE_3`) so neither flickers as plain text.
-const TRAILING_PARTIAL_CITATION =
-  /\[(?:S(?:O(?:U(?:R(?:C(?:E(?:_(?:\d*(?:\s*[,;]\s*\[?(?:SOURCE_)?\d*)*)?)?)?)?)?)?)?)?$/;
-
-function canonicalizeCitations(text: string): string {
-  return text.replace(SLOPPY_CITATION_LIST, (match) => {
-    const ids = match.match(/\d+/g) ?? [];
-    return ids.map((id) => `[SOURCE_${id}]`).join('');
-  });
-}
-
-// Best-effort recovery for a trailing unclosed chain that survives streaming
-// (the LLM forgot to close the bracket). Treat it as if the `]` were present
-// and emit canonical adjacent tokens; if there are no digits to recover,
-// drop the fragment entirely so users don't see broken markup.
-function recoverUnclosedTrailingCitation(match: string): string {
-  const ids = match.match(/\d+/g) ?? [];
-  if (ids.length === 0) return '';
-  return ids.map((id) => `[SOURCE_${id}]`).join('');
 }
 
 interface MarkdownBodyProps {
@@ -74,27 +33,10 @@ const MarkdownBody = memo(function MarkdownBody({
   isStreaming,
   onCitationClick,
 }: MarkdownBodyProps) {
-  const safeContent = useMemo(() => {
-    // 1. Rewrite complete sloppy citation lists to adjacent canonical tokens.
-    let s = canonicalizeCitations(content);
-
-    // 2. Handle a trailing unclosed citation chain.
-    if (isStreaming) {
-      // Hide it until the `]` lands so users never see partial brackets.
-      s = s.replace(TRAILING_PARTIAL_CITATION, '');
-    } else {
-      // Streaming finished but the LLM still forgot to close — recover.
-      s = s.replace(TRAILING_PARTIAL_CITATION, recoverUnclosedTrailingCitation);
-    }
-
-    // 3. Substitute canonical [SOURCE_N] with the markdown-inert sentinel.
-    s = s.replace(
-      CITATION_BRACKET,
-      `${CITATION_OPEN}SOURCE_$1${CITATION_CLOSE}`
-    );
-
-    return s;
-  }, [content, isStreaming]);
+  const remarkPlugins = useMemo<PluggableList>(
+    () => [remarkGfm, [remarkCitations, { isStreaming }]],
+    [isStreaming]
+  );
 
   const components = useMemo<Components>(() => {
     return {
@@ -216,11 +158,8 @@ const MarkdownBody = memo(function MarkdownBody({
   }, [citations, onCitationClick]);
 
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkCitations]}
-      components={components}
-    >
-      {safeContent}
+    <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
+      {content}
     </ReactMarkdown>
   );
 });

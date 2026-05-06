@@ -3,6 +3,16 @@ import { useAuthStore } from '@/lib/store/authStore';
 import { useChatStore } from '@/lib/store/chatStore';
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+// Global toggle (exposed to the client). Accepts '1', 'true', 'yes' (case-insensitive).
+const INCLUDE_SOURCES_DEFAULT = (() => {
+  const v = process.env.NEXT_PUBLIC_INCLUDE_SOURCES;
+  if (v === undefined || v === null) return true;
+  try {
+    return ['1', 'true', 'yes'].includes(String(v).toLowerCase());
+  } catch {
+    return true;
+  }
+})();
 
 export function useStreamQuery() {
   const { addUserMessage, startAssistantMessage, appendToken, finalizeCitation, finalizeMessage } =
@@ -12,7 +22,7 @@ export function useStreamQuery() {
     async (
       integrationId: string,
       query: string,
-      options: { matchCount?: number; rerank?: boolean } = {}
+      options: { matchCount?: number; rerank?: boolean; includeSources?: boolean } = {}
     ) => {
       addUserMessage(query);
       const assistantId = startAssistantMessage();
@@ -32,7 +42,7 @@ export function useStreamQuery() {
             integration_id: integrationId,
             match_count: options.matchCount ?? 5,
             rerank: options.rerank ?? true,
-            include_sources: true,
+            include_sources: options.includeSources ?? INCLUDE_SOURCES_DEFAULT,
           }),
         });
       } catch (err) {

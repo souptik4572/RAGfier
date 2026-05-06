@@ -19,7 +19,11 @@ from typing import Any, AsyncIterator
 from sse_starlette.sse import EventSourceResponse
 
 from app.models.schemas import UsageMetadata
-from app.pipeline.citation_resolver import resolve_citations
+from app.pipeline.citation_resolver import (
+    CitationStreamStripper,
+    resolve_citations,
+    strip_citation_markers,
+)
 from app.pipeline.generator import Generator, GenerationError
 from app.pipeline.query_pipeline import (
     INSUFFICIENT_CONTEXT_MESSAGE,
@@ -147,6 +151,7 @@ async def execute_query(
             prompt=prepared.prompt,
             context=prepared.context,
             query=payload.query,
+            include_citations=payload.include_sources,
         )
     except GenerationError as exc:
         await write_request_log_async(
@@ -165,7 +170,11 @@ async def execute_query(
 
     prepared.retrieval_metadata.latency_ms.generation = elapsed_ms(gen_started)
     stamp_total_latency(prepared)
-    citations = resolve_citations(answer, prepared.final_chunks) if payload.include_sources else []
+    if payload.include_sources:
+        citations = resolve_citations(answer, prepared.final_chunks)
+    else:
+        citations = []
+        answer = strip_citation_markers(answer)
     usage = usage_from_counts(query_token_count, answer)
     await write_request_log_async(
         client,
@@ -279,6 +288,7 @@ async def build_stream_response(
             return
 
         answer_parts: list[str] = []
+        stripper = CitationStreamStripper() if not payload.include_sources else None
         try:
             generator = Generator()
             gen_started = time.perf_counter()
@@ -286,15 +296,28 @@ async def build_stream_response(
                 prompt=prepared.prompt,
                 context=prepared.context,
                 query=payload.query,
+                include_citations=payload.include_sources,
             ):
                 answer_parts.append(token)
-                yield {"event": "token", "data": token}
+                if stripper is not None:
+                    token = stripper.feed(token)
+                if token:
+                    yield {"event": "token", "data": token}
         except GenerationError as exc:
+            if stripper is not None:
+                remainder = stripper.flush()
+                if remainder:
+                    yield {"event": "token", "data": remainder}
             yield {
                 "event": "error",
                 "data": json.dumps(success_payload("query.stream_generation_failed", detail=str(exc))),
             }
             return
+
+        if stripper is not None:
+            remainder = stripper.flush()
+            if remainder:
+                yield {"event": "token", "data": remainder}
 
         prepared.retrieval_metadata.latency_ms.generation = elapsed_ms(gen_started)
         stamp_total_latency(prepared)

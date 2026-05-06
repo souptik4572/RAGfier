@@ -34,6 +34,7 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
   const [input, setInput] = useState('');
   const [matchCount, setMatchCount] = useState(3);
   const [rerank, setRerank] = useState(true);
+  const [includeSources, setIncludeSources] = useState(false);
   const [pulsingSourceId, setPulsingSourceId] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
 
@@ -89,7 +90,7 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-    await streamQuery(integrationId, trimmed, { matchCount, rerank });
+    await streamQuery(integrationId, trimmed, { matchCount, rerank, includeSources });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -229,6 +230,16 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
               <span className="font-semibold text-[#111827]">Rerank</span>
             </label>
 
+            <label className="inline-flex items-center gap-1.5 text-xs text-gray-500 bg-[#F3F4F6] hover:bg-[#E5E7EB] rounded-full px-2.5 py-1 cursor-pointer select-none transition-colors duration-150">
+              <input
+                type="checkbox"
+                checked={includeSources}
+                onChange={(e) => setIncludeSources(e.target.checked)}
+                className="accent-[#3B82F6] w-3 h-3"
+              />
+              <span className="font-semibold text-[#111827]">Include Sources</span>
+            </label>
+
             {messages.length > 0 && (
               <button
                 onClick={clearChat}
@@ -248,7 +259,9 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
         </p>
         {activeCitations.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-center text-gray-400 text-sm py-8">
-            Citations will appear here after your first query.
+            {includeSources
+              ? 'Citations will appear here after your first query.'
+              : 'Enable "Include Sources" to see citations.'}
           </div>
         ) : (
           activeCitations.map((citation) => (

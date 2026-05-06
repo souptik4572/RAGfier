@@ -22,6 +22,12 @@ class GenerationError(RuntimeError):
     """Raised when LLM generation fails."""
 
 
+_NO_CITATIONS_ADDENDUM = (
+    "\n\nIMPORTANT: Do NOT include any [SOURCE_N] citation markers in your "
+    "response. Answer directly without referencing source numbers."
+)
+
+
 class Generator:
     """Citation-enforced LLM generator wrapping OpenAI chat completions."""
 
@@ -37,11 +43,19 @@ class Generator:
         self._settings = settings
 
     def _build_messages(
-        self, prompt: Dict[str, Any], context: str, query: str
+        self,
+        prompt: Dict[str, Any],
+        context: str,
+        query: str,
+        *,
+        include_citations: bool = True,
     ) -> List[Dict[str, str]]:
+        system = prompt["system_prompt"]
+        if not include_citations:
+            system = system + _NO_CITATIONS_ADDENDUM
         user_prompt = prompt["user_prompt_template"].format(context=context, query=query)
         return [
-            {"role": "system", "content": prompt["system_prompt"]},
+            {"role": "system", "content": system},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -58,9 +72,14 @@ class Generator:
         }
 
     async def generate(
-        self, prompt: Dict[str, Any], context: str, query: str
+        self,
+        prompt: Dict[str, Any],
+        context: str,
+        query: str,
+        *,
+        include_citations: bool = True,
     ) -> str:
-        messages = self._build_messages(prompt, context, query)
+        messages = self._build_messages(prompt, context, query, include_citations=include_citations)
         params = self._resolve_params(prompt)
         try:
             async for attempt in AsyncRetrying(
@@ -83,9 +102,14 @@ class Generator:
         raise GenerationError("Generation retry loop exited unexpectedly.")
 
     async def stream(
-        self, prompt: Dict[str, Any], context: str, query: str
+        self,
+        prompt: Dict[str, Any],
+        context: str,
+        query: str,
+        *,
+        include_citations: bool = True,
     ) -> AsyncIterator[str]:
-        messages = self._build_messages(prompt, context, query)
+        messages = self._build_messages(prompt, context, query, include_citations=include_citations)
         params = self._resolve_params(prompt)
         try:
             stream = await self._client.chat.completions.create(
