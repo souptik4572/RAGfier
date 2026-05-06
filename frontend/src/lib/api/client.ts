@@ -67,6 +67,14 @@ const beforeRequest: BeforeRequestHook = (request) => {
   }
 };
 
+function formatRetryAfter(seconds: number): string {
+  if (seconds <= 0) return 'shortly';
+  if (seconds === 1) return 'in 1 second';
+  if (seconds < 60) return `in ${seconds} seconds`;
+  const mins = Math.ceil(seconds / 60);
+  return `in ${mins} minute${mins === 1 ? '' : 's'}`;
+}
+
 const afterResponse: AfterResponseHook = async (_request, _options, response) => {
   if (response.status === 401) {
     useAuthStore.getState().clearAuth();
@@ -75,6 +83,21 @@ const afterResponse: AfterResponseHook = async (_request, _options, response) =>
       window.location.href = '/login';
     }
     return;
+  }
+
+  if (response.status === 429) {
+    let retryAfter: number | undefined;
+    try {
+      const body = await response.clone().json() as Record<string, unknown>;
+      const detail = body.detail as Record<string, unknown> | undefined;
+      if (detail && typeof detail.retry_after_seconds === 'number') {
+        retryAfter = detail.retry_after_seconds;
+      }
+    } catch {
+      // ignore parse errors
+    }
+    const suffix = retryAfter !== undefined ? ` Please try again ${formatRetryAfter(retryAfter)}.` : '';
+    throw new APIError(`Rate limit reached.${suffix}`, 429);
   }
 
   if (!response.ok) {

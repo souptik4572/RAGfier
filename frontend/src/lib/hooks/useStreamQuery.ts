@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { APIError } from '@/lib/api/client';
 import { useAuthStore } from '@/lib/store/authStore';
 import { useChatStore } from '@/lib/store/chatStore';
 
@@ -52,7 +53,26 @@ export function useStreamQuery() {
 
       if (!response.ok || !response.body) {
         finalizeMessage(assistantId, { declined: false, retrieval_metadata: null });
-        return;
+        let errorMessage = 'An unexpected error occurred';
+        try {
+          const body = await response.clone().json() as Record<string, unknown>;
+          if (response.status === 429) {
+            const detail = body.detail as Record<string, unknown> | undefined;
+            const retryAfter = detail && typeof detail.retry_after_seconds === 'number'
+              ? detail.retry_after_seconds
+              : undefined;
+            const suffix = retryAfter !== undefined
+              ? ` Please try again in ${retryAfter} second${retryAfter === 1 ? '' : 's'}.`
+              : '';
+            throw new APIError(`Rate limit reached.${suffix}`, 429);
+          }
+          const detail = body.detail;
+          if (typeof detail === 'string' && detail.trim()) errorMessage = detail;
+          else if (typeof body.message === 'string' && body.message.trim()) errorMessage = body.message;
+        } catch (inner) {
+          if (inner instanceof APIError) throw inner;
+        }
+        throw new APIError(errorMessage, response.status);
       }
 
       const reader = response.body.getReader();

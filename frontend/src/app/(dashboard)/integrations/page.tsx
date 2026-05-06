@@ -1,8 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { listIntegrations } from '@/lib/api/integrations';
+import { getErrorMessage } from '@/lib/utils';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { IntegrationCard } from '@/components/integrations/IntegrationCard';
 import { CreateIntegrationDialog } from '@/components/integrations/CreateIntegrationDialog';
@@ -14,10 +16,16 @@ import { Layers, Plus } from 'lucide-react';
 export default function IntegrationsPage() {
   const [createOpen, setCreateOpen] = useState(false);
 
-  const { data: integrations, isLoading } = useQuery({
+  const { data: integrations, isLoading, error } = useQuery({
     queryKey: ['integrations'],
     queryFn: listIntegrations,
   });
+
+  useEffect(() => {
+    if (error && !integrations) {
+      toast.error(getErrorMessage(error, 'Failed to load integrations'));
+    }
+  }, [error, integrations]);
 
   return (
     <div>

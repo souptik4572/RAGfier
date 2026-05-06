@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { Key, Plus } from 'lucide-react';
 import { listApiKeys, type ApiKeyWithSecret } from '@/lib/api/api-keys';
 import { listIntegrations } from '@/lib/api/integrations';
+import { getErrorMessage } from '@/lib/utils';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/shared/EmptyState';
@@ -17,17 +19,29 @@ export default function ApiKeysPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [revealedKey, setRevealedKey] = useState<ApiKeyWithSecret | null>(null);
 
-  const { data: apiKeys, isLoading: keysLoading } = useQuery({
+  const { data: apiKeys, isLoading: keysLoading, error: keysError } = useQuery({
     queryKey: ['api-keys'],
     queryFn: listApiKeys,
   });
 
-  const { data: integrations, isLoading: integrationsLoading } = useQuery({
+  const { data: integrations, isLoading: integrationsLoading, error: integrationsError } = useQuery({
     queryKey: ['integrations'],
     queryFn: listIntegrations,
   });
 
   const isLoading = keysLoading || integrationsLoading;
+
+  useEffect(() => {
+    if (keysError && !apiKeys) {
+      toast.error(getErrorMessage(keysError, 'Failed to load API keys'));
+    }
+  }, [keysError, apiKeys]);
+
+  useEffect(() => {
+    if (integrationsError && !integrations) {
+      toast.error(getErrorMessage(integrationsError, 'Failed to load integrations'));
+    }
+  }, [integrationsError, integrations]);
 
   return (
     <div>

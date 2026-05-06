@@ -1,11 +1,13 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { FileText, Play } from 'lucide-react';
 import { getIntegration } from '@/lib/api/integrations';
 import { listDocuments, uploadDocument } from '@/lib/api/documents';
+import { getErrorMessage } from '@/lib/utils';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { DocumentList } from '@/components/documents/DocumentList';
 import { UploadDropzone } from '@/components/documents/UploadDropzone';
@@ -27,10 +29,16 @@ export default function DocumentsPage({ params }: DocumentsPageProps) {
     queryFn: () => getIntegration(id),
   });
 
-  const { data: documents, isLoading } = useQuery({
+  const { data: documents, isLoading, error: documentsError } = useQuery({
     queryKey: ['documents', id],
     queryFn: () => listDocuments(id),
   });
+
+  useEffect(() => {
+    if (documentsError && !documents) {
+      toast.error(getErrorMessage(documentsError, 'Failed to load documents'));
+    }
+  }, [documentsError, documents]);
 
   const handleUpload = async (file: File, title?: string) => {
     const response = await uploadDocument(id, file, title);

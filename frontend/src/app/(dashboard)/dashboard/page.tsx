@@ -1,10 +1,13 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { getHealth } from '@/lib/api/health';
 import { listIntegrations, countIntegrations } from '@/lib/api/integrations';
 import { countApiKeys } from '@/lib/api/api-keys';
 import { countEvalRuns } from '@/lib/api/eval';
+import { getErrorMessage } from '@/lib/utils';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { LoadingBlock } from '@/components/shared/LoadingBlock';
@@ -13,12 +16,12 @@ import { Layers } from 'lucide-react';
 import Link from 'next/link';
 
 export default function DashboardPage() {
-  const { data: health, isLoading: healthLoading } = useQuery({
+  const { data: health, isLoading: healthLoading, error: healthError } = useQuery({
     queryKey: ['health'],
     queryFn: getHealth,
   });
 
-  const { data: integrations, isLoading: integrationsLoading } = useQuery({
+  const { data: integrations, isLoading: integrationsLoading, error: integrationsError } = useQuery({
     queryKey: ['integrations'],
     queryFn: listIntegrations,
   });
@@ -29,15 +32,31 @@ export default function DashboardPage() {
       queryFn: countIntegrations,
     });
 
-  const { data: apiKeyCount, isLoading: apiKeyCountLoading } = useQuery({
+  const { data: apiKeyCount, isLoading: apiKeyCountLoading, error: apiKeyCountError } = useQuery({
     queryKey: ['api-keys', 'count'],
     queryFn: countApiKeys,
   });
 
-  const { data: evalRunCount, isLoading: evalRunCountLoading } = useQuery({
+  const { data: evalRunCount, isLoading: evalRunCountLoading, error: evalRunCountError } = useQuery({
     queryKey: ['eval-runs', 'count'],
     queryFn: countEvalRuns,
   });
+
+  useEffect(() => {
+    if (healthError) toast.error(getErrorMessage(healthError, 'Failed to check system health'));
+  }, [healthError]);
+
+  useEffect(() => {
+    if (integrationsError && !integrations) toast.error(getErrorMessage(integrationsError, 'Failed to load integrations'));
+  }, [integrationsError, integrations]);
+
+  useEffect(() => {
+    if (apiKeyCountError) toast.error(getErrorMessage(apiKeyCountError, 'Failed to load API key count'));
+  }, [apiKeyCountError]);
+
+  useEffect(() => {
+    if (evalRunCountError) toast.error(getErrorMessage(evalRunCountError, 'Failed to load eval run count'));
+  }, [evalRunCountError]);
 
   const integrationCount = integrationCountData ?? integrations?.length ?? 0;
 

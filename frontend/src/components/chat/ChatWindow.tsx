@@ -2,7 +2,8 @@
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { ArrowDown, ArrowUp, Sparkles } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
+import { cn, getErrorMessage } from '@/lib/utils';
 import { useChatStore } from '@/lib/store/chatStore';
 import { useStreamQuery } from '@/lib/hooks/useStreamQuery';
 import { ChatMessage } from './ChatMessage';
@@ -90,7 +91,11 @@ export function ChatWindow({ integrationId }: ChatWindowProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-    await streamQuery(integrationId, trimmed, { matchCount, rerank, includeSources });
+    try {
+      await streamQuery(integrationId, trimmed, { matchCount, rerank, includeSources });
+    } catch (err) {
+      toast.error(getErrorMessage(err, 'Query failed'));
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
