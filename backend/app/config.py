@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     allowed_file_types: Annotated[List[str], NoDecode] = Field(
         default=["pdf", "md"], alias="ALLOWED_FILE_TYPES"
     )
+    cors_allow_origins: Annotated[List[str], NoDecode] = Field(
+        default=["http://localhost:3000"], alias="CORS_ALLOW_ORIGINS"
+    )
 
     chunk_size_tokens: int = Field(default=700, alias="CHUNK_SIZE_TOKENS")
     chunk_overlap_tokens: int = Field(default=100, alias="CHUNK_OVERLAP_TOKENS")
