@@ -215,3 +215,7 @@ DESIGN.md
 
 # Miscellaneous
 .DS_Store
+
+# Eval runtime artifacts
+backend/eval/datasets/seed_manifest.json
+backend/eval/reports/
