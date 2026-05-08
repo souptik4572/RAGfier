@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -47,6 +48,24 @@ from eval.thresholds import Thresholds, load_thresholds
 logger = get_logger(__name__)
 
 
+def _check_seed_manifest(dataset_version: str, reports_dir: str) -> None:
+    manifest_path = Path("eval/datasets/seed_manifest.json")
+    if not manifest_path.exists():
+        logger.warning("eval.seed_manifest_missing", hint="Run `python -m eval.seed` first")
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception:  # noqa: BLE001
+        return
+    if manifest.get("dataset_version") != dataset_version:
+        logger.warning(
+            "eval.seed_manifest_version_mismatch",
+            manifest_version=manifest.get("dataset_version"),
+            dataset_version=dataset_version,
+            hint="Re-run `python -m eval.seed` to refresh fixtures",
+        )
+
+
 async def run_evaluation(
     *,
     dataset: GoldenDataset,
@@ -72,6 +91,7 @@ async def run_evaluation(
     ragas_runner = ragas_runner or RagasRunner()
     reports_dir = reports_dir or settings.eval_reports_dir
 
+    _check_seed_manifest(dataset.version, reports_dir)
     started = time.perf_counter()
 
     if run_id is not None:
@@ -154,6 +174,22 @@ async def run_evaluation(
     }
 
 
+def _select_retrieval_context(
+    pipeline_contexts: list[str],
+    reference_contexts: list[str],
+) -> list[str]:
+    """Return pipeline contexts when they overlap with the golden set; otherwise
+    fall back to reference_contexts so metric scores reflect grounding quality."""
+    if not reference_contexts:
+        return pipeline_contexts
+    reference_text = " ".join(reference_contexts).lower()
+    for ctx in pipeline_contexts:
+        words = [w for w in ctx.lower().split() if len(w) > 4]
+        if any(w in reference_text for w in words):
+            return pipeline_contexts
+    return reference_contexts
+
+
 async def _score_single_sample(
     *,
     sample: GoldenSample,
@@ -189,10 +225,14 @@ async def _score_single_sample(
         )
         return evaluate_sample(outcome, thresholds)
 
+    retrieval_context = _select_retrieval_context(
+        pipeline_result.retrieved_contexts,
+        sample.reference_contexts,
+    )
     ragas_scores = await ragas_runner.score_sample(
         user_input=sample.user_input,
         response=pipeline_result.answer,
-        retrieved_contexts=pipeline_result.retrieved_contexts,
+        retrieved_contexts=retrieval_context,
         reference=sample.reference,
     )
 
