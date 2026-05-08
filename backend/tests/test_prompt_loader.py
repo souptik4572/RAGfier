@@ -76,3 +76,7 @@ def test_prompt_system_prompt_contains_decline_examples() -> None:
     assert "favourite colour" in prompt["system_prompt"]
     assert "section 50" in prompt["system_prompt"]
     assert "admin password" in prompt["system_prompt"]
+    # also assert decline response phrases are present
+    assert "I don't have enough information in the available documents" in prompt["system_prompt"]
+    assert "I was unable to find" in prompt["system_prompt"]
+    assert "I'm only able to answer" in prompt["system_prompt"]
