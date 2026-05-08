@@ -13,10 +13,17 @@ class FakeQuery:
         self._limit: Optional[int] = None
         self._op: Optional[str] = None
         self._payload: Any = None
+        self._on_conflict: str = "id"
 
     def insert(self, records: Any) -> "FakeQuery":
         self._op = "insert"
         self._payload = records
+        return self
+
+    def upsert(self, records: Any, on_conflict: str = "id") -> "FakeQuery":
+        self._op = "upsert"
+        self._payload = records
+        self._on_conflict = on_conflict
         return self
 
     def update(self, payload: Dict[str, Any]) -> "FakeQuery":
@@ -65,6 +72,32 @@ class FakeQuery:
                 self._table.rows.append(row)
                 stored.append(row)
             return _Resp(stored)
+
+        if self._op == "upsert":
+            records = (
+                self._payload if isinstance(self._payload, list) else [self._payload]
+            )
+            upserted: List[Dict[str, Any]] = []
+            for record in records:
+                row = dict(record)
+                row.setdefault("id", str(uuid.uuid4()))
+                conflict_key = self._on_conflict
+                conflict_val = row.get(conflict_key)
+                # Replace existing row if conflict key matches, otherwise insert
+                existing_idx = next(
+                    (
+                        i
+                        for i, r in enumerate(self._table.rows)
+                        if r.get(conflict_key) == conflict_val
+                    ),
+                    None,
+                )
+                if existing_idx is not None:
+                    self._table.rows[existing_idx] = row
+                else:
+                    self._table.rows.append(row)
+                upserted.append(row)
+            return _Resp(upserted)
 
         if self._op == "update":
             matched = self._apply_filters(self._table.rows)
@@ -239,3 +272,16 @@ class FakeAsyncOpenAIClient:
     def __init__(self, response_text: str = "stub answer [SOURCE_1]") -> None:
         self.embeddings = FakeEmbeddings()
         self.chat = FakeChat(response_text)
+
+
+class FakeEmbedder:
+    """Fake embedder that returns deterministic fixed-size vectors (no I/O)."""
+
+    async def embed_query(self, text: str) -> list[float]:
+        return [0.1] * 1536
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [[0.1] * 1536 for _ in texts]
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        return [[0.1] * 1536 for _ in texts]
