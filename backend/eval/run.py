@@ -48,7 +48,7 @@ from eval.thresholds import Thresholds, load_thresholds
 logger = get_logger(__name__)
 
 
-def _check_seed_manifest(dataset_version: str, reports_dir: str) -> None:
+def _check_seed_manifest(dataset_version: str) -> None:
     manifest_path = Path("eval/datasets/seed_manifest.json")
     if not manifest_path.exists():
         logger.warning("eval.seed_manifest_missing", hint="Run `python -m eval.seed` first")
@@ -91,7 +91,7 @@ async def run_evaluation(
     ragas_runner = ragas_runner or RagasRunner()
     reports_dir = reports_dir or settings.eval_reports_dir
 
-    _check_seed_manifest(dataset.version, reports_dir)
+    _check_seed_manifest(dataset.version)
     started = time.perf_counter()
 
     if run_id is not None:
