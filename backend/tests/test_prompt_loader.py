@@ -61,3 +61,18 @@ def test_load_falls_back_to_global_when_tenant_row_missing() -> None:
     )
     assert prompt["source"] == "database"
     assert prompt["system_prompt"] == "global system"
+
+
+def test_prompt_version_is_2() -> None:
+    clear_prompt_cache()
+    prompt = load_prompt("rag_generation_v1", tenant_id=None, client=None)
+    assert prompt["version"] == 2
+
+
+def test_prompt_system_prompt_contains_decline_examples() -> None:
+    clear_prompt_cache()
+    prompt = load_prompt("rag_generation_v1", tenant_id=None, client=None)
+    assert "DECLINE EXAMPLES" in prompt["system_prompt"]
+    assert "favourite colour" in prompt["system_prompt"]
+    assert "section 50" in prompt["system_prompt"]
+    assert "admin password" in prompt["system_prompt"]
