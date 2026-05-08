@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,43 @@ from app.utils.logger import get_logger
 from app.utils.prompt_loader import PromptNotFoundError, load_prompt
 
 logger = get_logger(__name__)
+
+_STOPWORDS = frozenset({
+    "what", "when", "where", "which", "who", "whom", "how", "why",
+    "this", "that", "these", "those", "with", "from", "into", "about",
+    "have", "does", "there", "their", "they", "will", "would", "could",
+    "should", "been", "were", "being", "your", "you", "the", "and",
+    "for", "are", "but", "not", "can",
+})
+
+
+def context_sufficiency_check(
+    query: str,
+    chunks: list[dict],
+    threshold: float,
+) -> bool:
+    """True if chunks contain enough query-term signal to attempt an answer.
+
+    Extracts non-stopword query terms (len > 3) and checks whether any single
+    chunk contains at least `threshold` fraction of them. Returns True when
+    terms are too short to judge (avoids false declines on short queries).
+    """
+    if not chunks:
+        return False
+    terms = [
+        w.lower()
+        for w in re.sub(r"[^\w\s]", "", query).split()
+        if len(w) > 3 and w.lower() not in _STOPWORDS
+    ]
+    if not terms:
+        return True
+    best = 0.0
+    for chunk in chunks:
+        content = chunk.get("content", "").lower()
+        present = sum(1 for t in terms if t in content)
+        best = max(best, present / len(terms))
+    return best >= threshold
+
 
 _DEFAULT_EMBEDDER: Optional[Embedder] = None
 _DEFAULT_RERANKER: Optional[Reranker] = None
@@ -184,6 +222,11 @@ async def prepare_query(
     elif rerank and not check_relevance(final_chunks, settings.relevance_threshold):
         declined = True
         decline_reason = "below_relevance_threshold"
+    elif not context_sufficiency_check(
+        query, final_chunks, settings.context_sufficiency_threshold
+    ):
+        declined = True
+        decline_reason = "insufficient_context"
 
     context = "" if declined else assemble_context(final_chunks)
     prepared = PreparedQuery(

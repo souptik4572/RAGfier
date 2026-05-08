@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     rrf_k: int = Field(default=60, alias="RRF_K")
     rerank_top_k: int = Field(default=8, alias="RERANK_TOP_K")
     relevance_threshold: float = Field(default=0.20, alias="RELEVANCE_THRESHOLD")
+    context_sufficiency_threshold: float = Field(
+        default=0.15, alias="CONTEXT_SUFFICIENCY_THRESHOLD"
+    )
 
     # OpenAI "File Search"–style weighted RRF. Defaults bias semantic
     # (0.7) over lexical (0.3); tune per-query if the corpus is keyword-
