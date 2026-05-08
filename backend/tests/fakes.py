@@ -250,14 +250,43 @@ class FakeAsyncStream:
         return _FakeStreamChunk(self._tokens.pop(0))
 
 
+class _FakeFunctionCall:
+    def __init__(self, arguments: str) -> None:
+        self.arguments = arguments
+
+
+class _FakeToolCall:
+    def __init__(self, arguments: str) -> None:
+        self.function = _FakeFunctionCall(arguments)
+
+
+class _FakeToolCallMessage:
+    def __init__(self, arguments: str) -> None:
+        self.tool_calls = [_FakeToolCall(arguments)]
+        self.content = None
+
+
+class _FakeToolCallChoice:
+    def __init__(self, arguments: str) -> None:
+        self.message = _FakeToolCallMessage(arguments)
+
+
+class _FakeToolCallCompletion:
+    def __init__(self, arguments: str) -> None:
+        self.choices = [_FakeToolCallChoice(arguments)]
+
+
 class FakeChatCompletions:
     def __init__(self, response_text: str = "stub answer [SOURCE_1]") -> None:
         self.response_text = response_text
         self.stream_tokens: List[str] = ["Hello", " ", "world", " [SOURCE_1]"]
         self.calls: list[dict] = []
+        self.tool_response: Optional[str] = None  # Set to JSON string to simulate tool call
 
     async def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
+        if self.tool_response is not None and kwargs.get("tools"):
+            return _FakeToolCallCompletion(self.tool_response)
         if kwargs.get("stream"):
             return FakeAsyncStream(self.stream_tokens)
         return _FakeChatCompletion(self.response_text)

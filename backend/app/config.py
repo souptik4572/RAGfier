@@ -132,6 +132,9 @@ class Settings(BaseSettings):
     generation_temperature: float = Field(default=0.1, alias="GENERATION_TEMPERATURE")
     generation_max_tokens: int = Field(default=2048, alias="GENERATION_MAX_TOKENS")
     generation_timeout_seconds: float = Field(default=30.0, alias="GENERATION_TIMEOUT_SECONDS")
+    use_structured_output: bool = Field(
+        default=True, alias="GENERATOR_USE_STRUCTURED_OUTPUT"
+    )
 
     dense_top_n: int = Field(default=30, alias="DENSE_TOP_N")
     sparse_top_n: int = Field(default=30, alias="SPARSE_TOP_N")
